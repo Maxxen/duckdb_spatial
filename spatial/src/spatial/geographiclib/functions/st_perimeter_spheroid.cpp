@@ -83,13 +83,7 @@ static double PolygonPerimeter(const core::Polygon &poly, GeographicLib::Polygon
 		double _ring_area;
 		double perimeter;
 		comp.Compute(false, true, perimeter, _ring_area);
-		if (ring_idx == 0) {
-			// Add outer ring
-			total_perimeter = perimeter;
-		} else {
-			// Subtract holes
-			total_perimeter -= perimeter;
-		}
+		total_perimeter += perimeter;
 	}
 	return total_perimeter;
 }
