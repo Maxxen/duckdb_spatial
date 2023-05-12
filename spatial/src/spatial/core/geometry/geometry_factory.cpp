@@ -433,9 +433,8 @@ Geometry GeometryFactory::Deserialize(const string_t &data) {
 }
 
 Point GeometryFactory::DeserializePoint(const_data_ptr_t &ptr) {
-	auto type = Load<uint32_t>(ptr);
+	//auto type = Load<uint32_t>(ptr);
 	ptr += sizeof(uint32_t);
-	D_ASSERT(type == (uint32_t)GeometryType::POINT);
 
 	// Points can be empty too, in which case the count is 0
 	auto count = Load<uint32_t>(ptr);
@@ -454,9 +453,9 @@ Point GeometryFactory::DeserializePoint(const_data_ptr_t &ptr) {
 }
 
 LineString GeometryFactory::DeserializeLineString(const_data_ptr_t &ptr) {
-	auto type = Load<uint32_t>(ptr);
+	//auto type = Load<uint32_t>(ptr);
 	ptr += sizeof(uint32_t);
-	D_ASSERT(type == (uint32_t)GeometryType::LINESTRING);
+	//D_ASSERT(type == (uint32_t)GeometryType::LINESTRING);
 
 	// 0 if the linestring is empty
 	auto length = Load<uint32_t>(ptr);
@@ -471,9 +470,9 @@ LineString GeometryFactory::DeserializeLineString(const_data_ptr_t &ptr) {
 }
 
 Polygon GeometryFactory::DeserializePolygon(const_data_ptr_t &ptr) {
-	auto type = Load<uint32_t>(ptr);
+	//auto type = Load<uint32_t>(ptr);
 	ptr += sizeof(uint32_t);
-	D_ASSERT(type == (uint32_t)GeometryType::POLYGON);
+	//D_ASSERT(type == (uint32_t)GeometryType::POLYGON);
 
 	// read num rings
 	auto num_rings = Load<uint32_t>(ptr);
@@ -494,9 +493,9 @@ Polygon GeometryFactory::DeserializePolygon(const_data_ptr_t &ptr) {
 }
 
 MultiPoint GeometryFactory::DeserializeMultiPoint(const_data_ptr_t &ptr) {
-	auto type = Load<uint32_t>(ptr);
+	//auto type = Load<uint32_t>(ptr);
 	ptr += sizeof(uint32_t);
-	D_ASSERT(type == (uint32_t)GeometryType::MULTIPOINT);
+	//D_ASSERT(type == (uint32_t)GeometryType::MULTIPOINT);
 
 	// read num points
 	auto num_points = Load<uint32_t>(ptr);
@@ -510,9 +509,9 @@ MultiPoint GeometryFactory::DeserializeMultiPoint(const_data_ptr_t &ptr) {
 }
 
 MultiLineString GeometryFactory::DeserializeMultiLineString(const_data_ptr_t &ptr) {
-	auto type = Load<uint32_t>(ptr);
+	//auto type = Load<uint32_t>(ptr);
 	ptr += sizeof(uint32_t);
-	D_ASSERT(type == (uint32_t)GeometryType::MULTILINESTRING);
+	//D_ASSERT(type == (uint32_t)GeometryType::MULTILINESTRING);
 
 	// read num linestrings
 	auto num_linestrings = Load<uint32_t>(ptr);
@@ -526,9 +525,9 @@ MultiLineString GeometryFactory::DeserializeMultiLineString(const_data_ptr_t &pt
 }
 
 MultiPolygon GeometryFactory::DeserializeMultiPolygon(const_data_ptr_t &ptr) {
-	auto type = Load<uint32_t>(ptr);
+	//auto type = Load<uint32_t>(ptr);
 	ptr += sizeof(uint32_t);
-	D_ASSERT(type == (uint32_t)GeometryType::MULTIPOLYGON);
+	//D_ASSERT(type == (uint32_t)GeometryType::MULTIPOLYGON);
 
 	// read num polygons
 	auto num_polygons = Load<uint32_t>(ptr);
@@ -542,9 +541,9 @@ MultiPolygon GeometryFactory::DeserializeMultiPolygon(const_data_ptr_t &ptr) {
 }
 
 GeometryCollection GeometryFactory::DeserializeGeometryCollection(const_data_ptr_t &ptr) {
-	auto type = Load<uint32_t>(ptr);
+	//auto type = Load<uint32_t>(ptr);
 	ptr += sizeof(uint32_t);
-	D_ASSERT(type == (uint32_t)GeometryType::GEOMETRYCOLLECTION);
+	//D_ASSERT(type == (uint32_t)GeometryType::GEOMETRYCOLLECTION);
 
 	// read num geometries
 	auto num_geometries = Load<uint32_t>(ptr);

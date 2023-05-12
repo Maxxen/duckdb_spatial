@@ -114,7 +114,7 @@ static unique_ptr<FunctionData> Bind(ClientContext &context, CopyInfo &info, vec
 // Init Local
 //===--------------------------------------------------------------------===//
 static unique_ptr<LocalFunctionData> InitLocal(ExecutionContext &context, FunctionData &bind_data) {
-	auto &gdal_data = (BindData &)bind_data;
+	//auto &gdal_data = (BindData &)bind_data;
 
 	auto local_data = make_uniq<LocalState>(context.client);
 	return std::move(local_data);
@@ -127,6 +127,7 @@ static bool IsGeometryType(const LogicalType &type) {
 	return type == core::GeoTypes::WKB_BLOB() || type == core::GeoTypes::POINT_2D() ||
 	       type == core::GeoTypes::GEOMETRY();
 }
+/*
 static unique_ptr<OGRGeomFieldDefn> OGRGeometryFieldTypeFromLogicalType(const string &name, const LogicalType &type) {
 	// TODO: Support more geometry types
 	if (type == core::GeoTypes::WKB_BLOB()) {
@@ -139,6 +140,7 @@ static unique_ptr<OGRGeomFieldDefn> OGRGeometryFieldTypeFromLogicalType(const st
 		throw NotImplementedException("Unsupported geometry type");
 	}
 }
+*/
 static unique_ptr<OGRFieldDefn> OGRFieldTypeFromLogicalType(const string &name, const LogicalType &type) {
 	// TODO: Set OGRFieldSubType for integers and integer lists
 	// TODO: Set string width?
@@ -381,7 +383,7 @@ static void Sink(ExecutionContext &context, FunctionData &bdata, GlobalFunctionD
 		// Geometry fields do not count towards the field index, so we need to keep track of them separately.
 		idx_t field_idx = 0;
 		for (idx_t col_idx = 0; col_idx < input.ColumnCount(); col_idx++) {
-			auto &name = bind_data.field_names[col_idx];
+			//auto &name = bind_data.field_names[col_idx];
 			auto &type = bind_data.field_sql_types[col_idx];
 			auto value = input.GetValue(col_idx, row_idx);
 
