@@ -1,5 +1,6 @@
 set(EXTENSION_SOURCES
     ${EXTENSION_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/st_envelope_agg.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/st_svg_agg.cpp
     PARENT_SCOPE
 )
