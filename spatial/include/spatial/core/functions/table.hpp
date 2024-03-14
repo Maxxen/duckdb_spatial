@@ -14,6 +14,8 @@ public:
 		RegisterShapefileTableFunction(db);
 		RegisterShapefileMetaTableFunction(db);
 		RegisterTestTableFunctions(db);
+
+        RegisterGeoPackageTableFunction(db);
 	}
 
 private:
@@ -21,6 +23,7 @@ private:
 	static void RegisterShapefileTableFunction(DatabaseInstance &db);
 	static void RegisterShapefileMetaTableFunction(DatabaseInstance &db);
 	static void RegisterTestTableFunctions(DatabaseInstance &db);
+    static void RegisterGeoPackageTableFunction(DatabaseInstance &db);
 };
 
 } // namespace core
