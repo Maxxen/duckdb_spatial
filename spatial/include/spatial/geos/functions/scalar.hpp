@@ -8,6 +8,7 @@ namespace geos {
 struct GEOSScalarFunctions {
 public:
 	static void Register(DatabaseInstance &db) {
+		RegisterStAsMVTGeom(db);
 		RegisterStBoundary(db);
 		RegisterStBuffer(db);
 		RegisterStCentroid(db);
@@ -45,6 +46,7 @@ public:
 	}
 
 private:
+	static void RegisterStAsMVTGeom(DatabaseInstance &db);
 	static void RegisterStBoundary(DatabaseInstance &db);
 	static void RegisterStBuffer(DatabaseInstance &db);
 	static void RegisterStCentroid(DatabaseInstance &db);

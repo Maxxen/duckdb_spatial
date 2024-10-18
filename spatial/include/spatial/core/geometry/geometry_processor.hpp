@@ -218,6 +218,8 @@ protected:
 	virtual RESULT ProcessCollection(CollectionState &state, ARGS... args) = 0;
 
 public:
+	virtual ~GeometryProcessor() = default;
+
 	RESULT Process(const geometry_t &geom, ARGS... args) {
 
 		const auto props = geom.GetProperties();

@@ -44,6 +44,7 @@ set(EXTENSION_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/st_removerepeatedpoints.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_startpoint.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_xyzm.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/st_tileenvelope.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/st_isempty.cpp
     PARENT_SCOPE
 )

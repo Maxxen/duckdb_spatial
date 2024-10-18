@@ -16,7 +16,7 @@ namespace core {
 // GEOMETRY -> HEX WKB
 //------------------------------------------------------------------------------
 
-void GeometryAsHEXWKBFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+static void GeometryAsHEXWKBFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	D_ASSERT(args.data.size() == 1);
 	auto &input = args.data[0];
 	auto count = args.size();
