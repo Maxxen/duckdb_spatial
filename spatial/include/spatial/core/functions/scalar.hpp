@@ -7,7 +7,8 @@ namespace core {
 
 struct CoreScalarFunctions {
 public:
-	static void Register(DatabaseInstance &db) {
+	static void Register(DatabaseInstance &db); /*{
+
 		RegisterStArea(db);
 		RegisterStAsGeoJSON(db);
 		RegisterStAsText(db);
@@ -65,8 +66,10 @@ public:
 		RegisterStMMax(db);
 		RegisterStMMin(db);
 	}
+*/
 
 private:
+	/*
 	// ST_Area
 	static void RegisterStArea(DatabaseInstance &db);
 
@@ -234,6 +237,7 @@ private:
 
 	// ST_MMin
 	static void RegisterStMMin(DatabaseInstance &db);
+	*/
 };
 
 } // namespace core

@@ -7,6 +7,9 @@
 #include "spatial/core/types.hpp"
 #include "spatial/core/geometry/geometry_processor.hpp"
 
+#include "geometry/geometry.hpp"
+#include "spatial/spatial_geometry.hpp"
+
 namespace spatial {
 
 namespace core {
