@@ -2192,6 +2192,328 @@ bool is_valid(const sgl::geometry *geom) {
 }
 
 
+//----------------------------------------------------------------------------------------------------------------------
+// Rectangle Clip
+//----------------------------------------------------------------------------------------------------------------------
+
+
+struct vertex_node {
+	vertex_node *next;
+	vertex_xyzm v;
+};
+
+struct vertex_list {
+
+	allocator *alloc = nullptr;
+	vertex_node *head = nullptr;
+	vertex_node *tail = nullptr;
+	vertex_node *free = nullptr;
+	size_t size = 0;
+
+	void clear() {
+		// Move all	nodes to the free list
+		if(!head) {
+			SGL_ASSERT(tail == nullptr);
+			return;
+		}
+		tail->next = free;
+		free = head;
+		tail = nullptr;
+		head = nullptr;
+		size = 0;
+	}
+
+	void append(const vertex_xyzm *vertex) {
+
+		vertex_node* node = nullptr;
+
+		// Allocate a new node if we dont have any free nodes
+		if(free == nullptr) {
+			const auto mem = (alloc->alloc(sizeof(vertex_node)));
+			node = new (mem) vertex_node();
+		} else {
+			node = free;
+			free = free->next;
+		}
+
+		// Initialize the node
+		node->v = *vertex;
+		node->next = nullptr;
+
+		// Update head and tail
+		if(!head) {
+			SGL_ASSERT(tail == nullptr);
+			head = node;
+		} else {
+			tail->next = node;
+		}
+		tail = node;
+
+		// Update size
+		size++;
+	}
+};
+
+// Sutherlan-Hodgman convex polygon clipping algorithm, adapted for rectangles
+sgl::geometry clip_by_box(sgl::allocator *alloc, const sgl::geometry *line, const sgl::box_xy *box) {
+
+	// Empty, no need to clip
+	if(line->is_empty()) {
+		return *line;
+	}
+
+	// Degenerate case, but we still need to filter out the point
+	if(line->get_count() == 1) {
+		const auto vertex = line->get_vertex_xy(0);
+		if(box->contains(&vertex)) {
+			return *line;
+		}
+		return sgl::linestring::make_empty(line->has_z(), line->has_m());
+	}
+
+	// We have at least one segment
+	SGL_ASSERT(line->get_count() > 1);
+	const auto vertex_data = line->get_vertex_data();
+	const auto vertex_count = line->get_count();
+	const auto vertex_stride = line->get_vertex_size();
+
+	// First, create a list of vertices
+	vertex_list input_list;
+	input_list.alloc = alloc;
+
+	vertex_xyzm vertex = {0, 0, 0, 0};
+	for(uint32_t i = 0; i < vertex_count; i++) {
+		memcpy(&vertex, vertex_data + i * vertex_stride, vertex_stride);
+		input_list.append(&vertex);
+	}
+
+	// Now, we can start clipping
+	vertex_list output_list;
+	output_list.alloc = alloc;
+
+	const auto min_x = box->min.x;
+	const auto min_y = box->min.y;
+	const auto max_x = box->max.x;
+	const auto max_y = box->max.y;
+
+	vertex_node* prev = nullptr;
+	vertex_node* curr = nullptr;
+
+	// Clip the min-x edge
+	prev = input_list.head;
+	curr = input_list.head;
+
+	while(curr) {
+		// Is the current vertex on the edge?
+		if(curr->v.x == min_x) {
+			// Add the current vertex, no need for an intersection
+			output_list.append(&curr->v);
+		}
+		// Is current vertex inside the edge?
+		else if(curr->v.x > min_x) {
+			// Is the previous vertex outside the edge?
+			if(prev->v.x < min_x) {
+				// Add the intersection point
+				const auto ratio = (min_x - curr->v.x) / (prev->v.x - curr->v.x);
+				const auto clipped_y = curr->v.y + ratio * (prev->v.y - curr->v.y);
+				const auto clipped_z = curr->v.zm + ratio * (prev->v.zm - curr->v.zm);
+				const auto clipped_m = curr->v.m + ratio * (prev->v.m - curr->v.m);
+
+				vertex_xyzm clipped = {min_x, clipped_y, clipped_z, clipped_m};
+				output_list.append(&clipped);
+			}
+			// Add the current vertex
+			output_list.append(&curr->v);
+		}
+		// The current vertex is outside the box
+		// Is the previous vertex inside the box?
+		else if(prev->v.x >= min_x) {
+			// Add the intersection point
+			const auto ratio = (min_x - curr->v.x) / (prev->v.x - curr->v.x);
+			const auto clipped_y = curr->v.y + ratio * (prev->v.y - curr->v.y);
+			const auto clipped_z = curr->v.zm + ratio * (prev->v.zm - curr->v.zm);
+			const auto clipped_m = curr->v.m + ratio * (prev->v.m - curr->v.m);
+
+			vertex_xyzm clipped = {min_x, clipped_y, clipped_z, clipped_m};
+			output_list.append(&clipped);
+
+		}
+
+		prev = curr;
+		curr = curr->next;
+	}
+
+	// Swap the input and output lists
+	std::swap(input_list, output_list);
+	output_list.clear();
+
+	// Clip the min-y edge
+	prev = input_list.head;
+	curr = input_list.head;
+
+	while(curr) {
+		// Is the current vertex on the edge?
+		if(curr->v.y == min_y) {
+			// Add the current vertex, no need for an intersection
+			output_list.append(&curr->v);
+		}
+		// Is current vertex inside the edge?
+		else if(curr->v.y > min_y) {
+			// Is the previous vertex outside the edge?
+			if(prev->v.y < min_y) {
+				// Add the intersection point
+				const auto ratio = (min_y - curr->v.y) / (prev->v.y - curr->v.y);
+				const auto clipped_x = curr->v.x + ratio * (prev->v.x - curr->v.x);
+				const auto clipped_z = curr->v.zm + ratio * (prev->v.zm - curr->v.zm);
+				const auto clipped_m = curr->v.m + ratio * (prev->v.m - curr->v.m);
+
+				vertex_xyzm clipped = {clipped_x, min_y, clipped_z, clipped_m};
+				output_list.append(&clipped);
+			}
+			// Add the current vertex
+			output_list.append(&curr->v);
+		}
+		// The current vertex is outside the box
+		// Is the previous vertex inside the box?
+		else if(prev->v.y >= min_y) {
+			// Add the intersection point
+			const auto ratio = (min_y - curr->v.y) / (prev->v.y - curr->v.y);
+			const auto clipped_x = curr->v.x + ratio * (prev->v.x - curr->v.x);
+			const auto clipped_z = curr->v.zm + ratio * (prev->v.zm - curr->v.zm);
+			const auto clipped_m = curr->v.m + ratio * (prev->v.m - curr->v.m);
+
+			vertex_xyzm clipped = {clipped_x, min_y, clipped_z, clipped_m};
+			output_list.append(&clipped);
+		}
+
+		prev = curr;
+		curr = curr->next;
+	}
+
+	// Swap the input and output lists
+	std::swap(input_list, output_list);
+	output_list.clear();
+
+	// Clip the max-x edge
+	prev = input_list.head;
+	curr = input_list.head;
+
+	while(curr) {
+		// Is the current vertex on the edge?
+		if(curr->v.x == max_x) {
+			// Add the current vertex, no need for an intersection
+			output_list.append(&curr->v);
+		}
+		// Is current vertex inside the edge?
+		else if(curr->v.x < max_x) {
+			// Is the previous vertex outside the edge?
+			if(prev->v.x > max_x) {
+				// Add the intersection point
+				const auto ratio = (max_x - curr->v.x) / (prev->v.x - curr->v.x);
+				const auto clipped_y = curr->v.y + ratio * (prev->v.y - curr->v.y);
+				const auto clipped_z = curr->v.zm + ratio * (prev->v.zm - curr->v.zm);
+				const auto clipped_m = curr->v.m + ratio * (prev->v.m - curr->v.m);
+
+				vertex_xyzm clipped = {max_x, clipped_y, clipped_z, clipped_m};
+				output_list.append(&clipped);
+			}
+			// Add the current vertex
+			output_list.append(&curr->v);
+		}
+		// The current vertex is outside the box
+		// Is the previous vertex inside the box?
+		else if(prev->v.x <= max_x) {
+			// Add the intersection point
+			const auto ratio = (max_x - curr->v.x) / (prev->v.x - curr->v.x);
+			const auto clipped_y = curr->v.y + ratio * (prev->v.y - curr->v.y);
+			const auto clipped_z = curr->v.zm + ratio * (prev->v.zm - curr->v.zm);
+			const auto clipped_m = curr->v.m + ratio * (prev->v.m - curr->v.m);
+
+			vertex_xyzm clipped = {max_x, clipped_y, clipped_z, clipped_m};
+			output_list.append(&clipped);
+		}
+
+		prev = curr;
+		curr = curr->next;
+	}
+
+	// Swap the input and output lists
+	std::swap(input_list, output_list);
+	output_list.clear();
+
+	// Clip the max-y edge
+	prev = input_list.head;
+	curr = input_list.head;
+
+	while(curr) {
+		// Is the current vertex on the edge?
+		if(curr->v.y == max_y) {
+			// Add the current vertex, no need for an intersection
+			output_list.append(&curr->v);
+		}
+		// Is current vertex inside the edge?
+		else if(curr->v.y < max_y) {
+			// Is the previous vertex outside the edge?
+			if(prev->v.y > max_y) {
+				// Add the intersection point
+				const auto ratio = (max_y - curr->v.y) / (prev->v.y - curr->v.y);
+				const auto clipped_x = curr->v.x + ratio * (prev->v.x - curr->v.x);
+				const auto clipped_z = curr->v.zm + ratio * (prev->v.zm - curr->v.zm);
+				const auto clipped_m = curr->v.m + ratio * (prev->v.m - curr->v.m);
+
+				vertex_xyzm clipped = {clipped_x, max_y, clipped_z, clipped_m};
+				output_list.append(&clipped);
+			}
+			// Add the current vertex
+			output_list.append(&curr->v);
+		}
+		// The current vertex is outside the box
+		// Is the previous vertex inside the box?
+		else if(prev->v.y <= max_y) {
+			// Add the intersection point
+			const auto ratio = (max_y - curr->v.y) / (prev->v.y - curr->v.y);
+			const auto clipped_x = curr->v.x + ratio * (prev->v.x - curr->v.x);
+			const auto clipped_z = curr->v.zm + ratio * (prev->v.zm - curr->v.zm);
+			const auto clipped_m = curr->v.m + ratio * (prev->v.m - curr->v.m);
+
+			vertex_xyzm clipped = {clipped_x, max_y, clipped_z, clipped_m};
+			output_list.append(&clipped);
+		}
+
+		prev = curr;
+		curr = curr->next;
+	}
+
+	std::swap(input_list, output_list);
+	output_list.clear();
+
+	// Now serialize the clipped vertices
+	const auto output_count = input_list.size;
+
+	if(output_count == 0) {
+		// TODO: Adjust by adding extra vertices accordingly (if this is a linear ring or a linestring)
+		return sgl::linestring::make_empty(line->has_z(), line->has_m());
+	}
+
+	// Allocate a contiguous memory block for the output
+	const auto output_mem = alloc->alloc(output_count * vertex_stride);
+	const auto output_ptr = static_cast<uint8_t *>(output_mem);
+
+	// Copy over the clipped vertices
+	auto node = input_list.head;
+	for(uint32_t i = 0; i < output_count; i++) {
+		memcpy(output_ptr + i * vertex_stride, &node->v, vertex_stride);
+		node = node->next;
+	}
+	SGL_ASSERT(node == nullptr);
+
+	// Create the output geometry
+	auto output_type = output_count == 1 ? sgl::geometry_type::POINT : sgl::geometry_type::LINESTRING;
+	auto output = sgl::geometry(output_type, line->has_z(), line->has_m());
+	output.set_vertex_data(output_ptr, output_count);
+
+	return output;
+}
 
 } // namespace ops
 

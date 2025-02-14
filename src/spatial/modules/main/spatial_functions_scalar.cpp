@@ -5155,6 +5155,96 @@ struct ST_Intersects {
 };
 
 //======================================================================================================================
+// ST_Intersection
+//======================================================================================================================
+
+struct ST_Intersection {
+
+	//------------------------------------------------------------------------------------------------------------------
+	// Operation
+	//------------------------------------------------------------------------------------------------------------------
+	static void Operation(ExpressionState &state, Vector &geom_vec, Vector &box_vec, Vector &result, idx_t count) {
+		using GEOM_TYPE = PrimitiveType<string_t>;
+		using BOX_TYPE = StructTypeQuaternary<double, double, double, double>;
+
+		GenericExecutor::ExecuteBinary<GEOM_TYPE, BOX_TYPE, GEOM_TYPE>(
+		    geom_vec, box_vec, result, count, [&](const GEOM_TYPE &geom_type, const BOX_TYPE &box_type) {
+			    // We reset after each call, because this is a very memory intensive operation
+			    auto &lstate = LocalState::ResetAndGet(state);
+			    auto &alloc = lstate.GetAllocator();
+
+			    const auto geom = lstate.Deserialize(geom_type.val);
+
+			    sgl::box_xy box2d = {};
+			    box2d.min.x = box_type.a_val;
+			    box2d.min.y = box_type.b_val;
+			    box2d.max.x = box_type.c_val;
+			    box2d.max.y = box_type.d_val;
+
+			    if (geom.get_type() != sgl::geometry_type::LINESTRING) {
+				    throw InvalidInputException("ST_Intersection (with box) only supports POLYGON geometries");
+			    }
+
+			    const auto clipped = sgl::ops::clip_by_box(&alloc, &geom, &box2d);
+			    return lstate.Serialize(result, clipped);
+		    });
+	}
+
+	//------------------------------------------------------------------------------------------------------------------
+	// Execute (GEOMETRY, BOX_2D)
+	//------------------------------------------------------------------------------------------------------------------
+	static void ExecuteGeometryBox(DataChunk &args, ExpressionState &state, Vector &result) {
+		Operation(state, args.data[0], args.data[1], result, args.size());
+	}
+
+	//------------------------------------------------------------------------------------------------------------------
+	// Execute (BOX_2D, GEOMETRY)
+	//------------------------------------------------------------------------------------------------------------------
+	static void ExecuteBoxGeometry(DataChunk &args, ExpressionState &state, Vector &result) {
+		Operation(state, args.data[1], args.data[0], result, args.size());
+	}
+
+	//------------------------------------------------------------------------------------------------------------------
+	// Documentation
+	//------------------------------------------------------------------------------------------------------------------
+	static constexpr auto DESCRIPTION = R"(
+		Returns the geometry clipped by the bounding box.
+	)";
+	static constexpr auto EXAMPLE = "";
+
+	//------------------------------------------------------------------------------------------------------------------
+	// Register
+	//------------------------------------------------------------------------------------------------------------------
+	static void Register(DatabaseInstance &db) {
+		FunctionBuilder::RegisterScalar(db, "ST_Intersection", [](ScalarFunctionBuilder &func) {
+			func.AddVariant([](ScalarFunctionVariantBuilder &variant) {
+				variant.AddParameter("geom", GeoTypes::GEOMETRY());
+				variant.AddParameter("box", GeoTypes::BOX_2D());
+				variant.SetReturnType(GeoTypes::GEOMETRY());
+
+				variant.SetInit(LocalState::Init);
+				variant.SetFunction(ExecuteGeometryBox);
+			});
+
+			func.AddVariant([](ScalarFunctionVariantBuilder &variant) {
+				variant.AddParameter("box", GeoTypes::BOX_2D());
+				variant.AddParameter("geom", GeoTypes::GEOMETRY());
+				variant.SetReturnType(GeoTypes::GEOMETRY());
+
+				variant.SetInit(LocalState::Init);
+				variant.SetFunction(ExecuteBoxGeometry);
+			});
+
+			func.SetDescription(DESCRIPTION);
+			func.SetExample(EXAMPLE);
+
+			func.SetTag("ext", "spatial");
+			func.SetTag("category", "relation");
+		});
+	}
+};
+
+//======================================================================================================================
 // ST_IntersectsExtent
 //======================================================================================================================
 
@@ -7967,6 +8057,7 @@ void RegisterSpatialScalarFunctions(DatabaseInstance &db) {
 	ST_Distance_Sphere::Register(db);
 	ST_Hilbert::Register(db);
 	ST_Intersects::Register(db);
+	ST_Intersection::Register(db);
 	ST_IntersectsExtent::Register(db);
 	ST_IsClosed::Register(db);
 	ST_IsEmpty::Register(db);

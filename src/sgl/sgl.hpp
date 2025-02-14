@@ -90,6 +90,10 @@ struct box_xy {
 		};
 	}
 
+	bool contains(const vertex_xy *vertex) const {
+        return vertex->x >= min.x && vertex->x <= max.x && vertex->y >= min.y && vertex->y <= max.y;
+    }
+
 	bool intersects(const box_xy &other) const {
 		return !(min.x > other.max.x || max.x < other.min.x || min.y > other.max.y || max.y < other.min.y);
 	}
@@ -869,6 +873,9 @@ geometry extract_polygons(sgl::geometry *geom);
 // TODO: this will only check that geometries have enough vertices to be valid.
 // It does NOT check topological validity.
 bool is_valid(const sgl::geometry *geom);
+
+// Clip a geometry by a bounding box
+sgl::geometry clip_by_box(sgl::allocator *alloc, const sgl::geometry *geom, const sgl::box_xy *box);
 
 } // namespace ops
 

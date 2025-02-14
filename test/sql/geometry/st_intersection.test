@@ -1,0 +1,17 @@
+require spatial
+
+query I
+SELECT ST_Intersection(
+	'LINESTRING (0 0, 3 3, 4 4, 10 10)'::GEOMETRY,
+	{min_x: 2, max_x: 5, min_y: 2, max_y: 5}::BOX_2D);
+----
+LINESTRING (2 2, 3 3, 4 4, 5 5)
+
+
+# If only one point is inside the box, the result is a point
+query I
+SELECT ST_Intersection(
+	'LINESTRING (0 0, 3 3)'::GEOMETRY,
+	{min_x: 3, max_x: 5, min_y: 3, max_y: 5}::BOX_2D);
+----
+POINT (3 3)
