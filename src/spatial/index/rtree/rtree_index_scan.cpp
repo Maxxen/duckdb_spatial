@@ -26,7 +26,12 @@ BindInfo RTreeIndexScanBindInfo(const optional_ptr<FunctionData> bind_data_p) {
 //-------------------------------------------------------------------------
 // Global State
 //-------------------------------------------------------------------------
-struct RTreeIndexScanGlobalState : public GlobalTableFunctionState {
+struct RTreeIndexScanGlobalState final : public GlobalTableFunctionState {
+	//! The DataChunk containing all read columns.
+	//! This includes filter columns, which are immediately removed.
+	DataChunk all_columns;
+	vector<idx_t> projection_ids;
+
 	ColumnFetchState fetch_state;
 	TableScanState local_storage_state;
 	vector<StorageIndex> column_ids;
@@ -39,7 +44,6 @@ struct RTreeIndexScanGlobalState : public GlobalTableFunctionState {
 static unique_ptr<GlobalTableFunctionState> RTreeIndexScanInitGlobal(ClientContext &context,
                                                                      TableFunctionInitInput &input) {
 	auto &bind_data = input.bind_data->Cast<RTreeIndexScanBindData>();
-
 	auto result = make_uniq<RTreeIndexScanGlobalState>();
 
 	// Setup the scan state for the local storage
@@ -62,6 +66,26 @@ static unique_ptr<GlobalTableFunctionState> RTreeIndexScanInitGlobal(ClientConte
 	// Initialize the scan state for the index
 	result->index_state = bind_data.index.Cast<RTreeIndex>().InitializeScan(bind_data.bbox);
 
+	// Early out if there is nothing to project
+	if (!input.CanRemoveFilterColumns()) {
+		return std::move(result);
+	}
+
+	// We need this to project out what we scan from the underlying table.
+	result->projection_ids = input.projection_ids;
+
+	auto &duck_table = bind_data.table.Cast<DuckTableEntry>();
+	const auto &columns = duck_table.GetColumns();
+	vector<LogicalType> scanned_types;
+	for (const auto &col_idx : input.column_indexes) {
+		if (col_idx.IsRowIdColumn()) {
+			scanned_types.emplace_back(LogicalType::ROW_TYPE);
+		} else {
+			scanned_types.push_back(columns.GetColumn(col_idx.ToLogical()).Type());
+		}
+	}
+	result->all_columns.Initialize(context, scanned_types);
+
 	return std::move(result);
 }
 
@@ -83,8 +107,17 @@ static void RTreeIndexScanExecute(ClientContext &context, TableFunctionInput &da
 	}
 
 	// Fetch the data from the local storage given the row ids
-	bind_data.table.GetStorage().Fetch(transaction, output, state.column_ids, state.row_ids, row_count,
+	if (state.projection_ids.empty()) {
+		bind_data.table.GetStorage().Fetch(transaction, output, state.column_ids, state.row_ids, row_count,
+		                                   state.fetch_state);
+		return;
+	}
+
+	// Otherwise, we need to first fetch into our scan chunk, and then project out the result
+	state.all_columns.Reset();
+	bind_data.table.GetStorage().Fetch(transaction, state.all_columns, state.column_ids, state.row_ids, row_count,
 	                                   state.fetch_state);
+	output.ReferenceColumns(state.all_columns, state.projection_ids);
 }
 
 //-------------------------------------------------------------------------

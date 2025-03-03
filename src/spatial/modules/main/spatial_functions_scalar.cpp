@@ -2973,6 +2973,14 @@ struct ST_ForceBase {
 		FunctionBuilder::RegisterScalar(db, IMPL::NAME, [](ScalarFunctionBuilder &func) {
 			func.AddVariant([](ScalarFunctionVariantBuilder &variant) {
 				variant.AddParameter("geom", GeoTypes::GEOMETRY());
+
+				if (IMPL::HAS_Z) {
+					variant.AddParameter("z", LogicalType::DOUBLE);
+				}
+				if (IMPL::HAS_M) {
+					variant.AddParameter("m", LogicalType::DOUBLE);
+				}
+
 				variant.SetReturnType(GeoTypes::GEOMETRY());
 
 				variant.SetInit(LocalState::Init);

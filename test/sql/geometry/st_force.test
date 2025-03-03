@@ -1,0 +1,31 @@
+require spatial
+
+query I
+SELECT ST_Force3DZ(ST_Point(1,2), 3)
+----
+POINT Z (1 2 3)
+
+query I
+SELECT ST_Force3DM(ST_Point(1,2), 3)
+----
+POINT M (1 2 3)
+
+query I
+SELECT ST_Force4D(ST_Point(1,2), 3, 4)
+----
+POINT ZM (1 2 3 4)
+
+query I
+SELECT ST_Force2D(ST_Force3DZ(ST_Point(1,2),3))
+----
+POINT (1 2)
+
+query I
+SELECT ST_Force2D(ST_Force3DM(ST_Point(1,2),3))
+----
+POINT (1 2)
+
+query I
+SELECT ST_Force3DZ(ST_Force3DM(ST_Point(1,2),3),4)
+----
+POINT Z (1 2 4)

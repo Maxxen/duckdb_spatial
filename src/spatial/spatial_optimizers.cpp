@@ -205,54 +205,54 @@ public:
 				// Create the new join condition
 				vector<unique_ptr<Expression>> left_extent_args;
 				left_extent_args.push_back(left_pred_expr->Copy());
-				auto left_extent = make_uniq<BoundFunctionExpression>(GeoTypes::BOX_2D(), std::move(extent_func_left),
+				auto left_extent = make_uniq<BoundFunctionExpression>(GeoTypes::BOX_2DF(), std::move(extent_func_left),
 				                                                      std::move(left_extent_args), nullptr);
 
 				vector<unique_ptr<Expression>> right_extent_args;
 				right_extent_args.push_back(right_pred_expr->Copy());
-				auto right_extent = make_uniq<BoundFunctionExpression>(GeoTypes::BOX_2D(), std::move(extent_func_right),
+				auto right_extent = make_uniq<BoundFunctionExpression>(GeoTypes::BOX_2DF(), std::move(extent_func_right),
 				                                                       std::move(right_extent_args), nullptr);
 
 				// Left
 				vector<unique_ptr<Expression>> left_xmin_args;
 				left_xmin_args.push_back(left_extent->Copy());
-				auto a_x_min = make_uniq<BoundFunctionExpression>(LogicalType::DOUBLE, std::move(xmin_func_left),
+				auto a_x_min = make_uniq<BoundFunctionExpression>(LogicalType::FLOAT, std::move(xmin_func_left),
 				                                                  std::move(left_xmin_args), nullptr);
 
 				vector<unique_ptr<Expression>> left_xmax_args;
 				left_xmax_args.push_back(left_extent->Copy());
-				auto a_x_max = make_uniq<BoundFunctionExpression>(LogicalType::DOUBLE, std::move(xmax_func_left),
+				auto a_x_max = make_uniq<BoundFunctionExpression>(LogicalType::FLOAT, std::move(xmax_func_left),
 				                                                  std::move(left_xmax_args), nullptr);
 
 				vector<unique_ptr<Expression>> left_ymin_args;
 				left_ymin_args.push_back(left_extent->Copy());
-				auto a_y_min = make_uniq<BoundFunctionExpression>(LogicalType::DOUBLE, std::move(ymin_func_left),
+				auto a_y_min = make_uniq<BoundFunctionExpression>(LogicalType::FLOAT, std::move(ymin_func_left),
 				                                                  std::move(left_ymin_args), nullptr);
 
 				vector<unique_ptr<Expression>> left_ymax_args;
 				left_ymax_args.push_back(left_extent->Copy());
-				auto a_y_max = make_uniq<BoundFunctionExpression>(LogicalType::DOUBLE, std::move(ymax_func_left),
+				auto a_y_max = make_uniq<BoundFunctionExpression>(LogicalType::FLOAT, std::move(ymax_func_left),
 				                                                  std::move(left_ymax_args), nullptr);
 
 				// Right
 				vector<unique_ptr<Expression>> right_xmin_args;
 				right_xmin_args.push_back(right_extent->Copy());
-				auto b_x_min = make_uniq<BoundFunctionExpression>(LogicalType::DOUBLE, std::move(xmin_func_right),
+				auto b_x_min = make_uniq<BoundFunctionExpression>(LogicalType::FLOAT, std::move(xmin_func_right),
 				                                                  std::move(right_xmin_args), nullptr);
 
 				vector<unique_ptr<Expression>> right_xmax_args;
 				right_xmax_args.push_back(right_extent->Copy());
-				auto b_x_max = make_uniq<BoundFunctionExpression>(LogicalType::DOUBLE, std::move(xmax_func_right),
+				auto b_x_max = make_uniq<BoundFunctionExpression>(LogicalType::FLOAT, std::move(xmax_func_right),
 				                                                  std::move(right_xmax_args), nullptr);
 
 				vector<unique_ptr<Expression>> right_ymin_args;
 				right_ymin_args.push_back(right_extent->Copy());
-				auto b_y_min = make_uniq<BoundFunctionExpression>(LogicalType::DOUBLE, std::move(ymin_func_right),
+				auto b_y_min = make_uniq<BoundFunctionExpression>(LogicalType::FLOAT, std::move(ymin_func_right),
 				                                                  std::move(right_ymin_args), nullptr);
 
 				vector<unique_ptr<Expression>> right_ymax_args;
 				right_ymax_args.push_back(right_extent->Copy());
-				auto b_y_max = make_uniq<BoundFunctionExpression>(LogicalType::DOUBLE, std::move(ymax_func_right),
+				auto b_y_max = make_uniq<BoundFunctionExpression>(LogicalType::FLOAT, std::move(ymax_func_right),
 				                                                  std::move(right_ymax_args), nullptr);
 
 				// Now create the new join operator
