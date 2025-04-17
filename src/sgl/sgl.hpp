@@ -300,6 +300,7 @@ public:
 	uint8_t *get_vertex_data();
 	void set_vertex_data(const uint8_t *data, uint32_t size);
 	void set_vertex_data(const char *data, uint32_t size);
+	void set_vertex_data(const double* data, uint32_t size);
 
 	void allocate_vertex_data(allocator *alloc, uint32_t size);
 	// Requires that the vertex data has been allocated with allocate_vertex_data
@@ -548,6 +549,9 @@ inline void geometry::set_vertex_data(const uint8_t *data, uint32_t size) {
 }
 
 inline void geometry::set_vertex_data(const char *data, uint32_t size) {
+	set_vertex_data(reinterpret_cast<const uint8_t *>(data), size);
+}
+inline void geometry::set_vertex_data(const double* data, uint32_t size) {
 	set_vertex_data(reinterpret_cast<const uint8_t *>(data), size);
 }
 

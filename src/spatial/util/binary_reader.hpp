@@ -64,6 +64,10 @@ public:
 		return end;
 	}
 
+	bool IsDone() const {
+		return ptr >= end;
+	}
+
 private:
 	void CheckSize(const size_t size) const {
 		if (ptr + size > end) {

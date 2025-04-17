@@ -31,6 +31,7 @@ include_directories(src/third_party/yyjson/include)
 add_subdirectory(src/third_party/yyjson)
 
 include_directories(src/third_party/protozero/include)
+include_directories(src/third_party/flatbuffers/include)
 
 include_directories(src/third_party/shapelib)
 add_subdirectory(src/third_party/shapelib)

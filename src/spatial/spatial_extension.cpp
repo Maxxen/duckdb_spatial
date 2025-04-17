@@ -14,6 +14,7 @@
 #include "spatial/spatial_optimizers.hpp"
 #include "spatial/spatial_types.hpp"
 #include "spatial/spatial_geoarrow.hpp"
+#include "spatial/modules/fgb/fgb_module.hpp"
 
 namespace duckdb {
 
@@ -34,6 +35,8 @@ static void LoadInternal(DatabaseInstance &instance) {
 	RegisterGEOSModule(instance);
 	RegisterOSMModule(instance);
 	RegisterShapefileModule(instance);
+
+	RegisterReadFGB(instance);
 
 	RTreeModule::RegisterIndex(instance);
 	RTreeModule::RegisterIndexPragmas(instance);

@@ -1,0 +1,14 @@
+require spatial
+
+query IIIIII rowsort
+describe select * from read_fgb('__WORKING_DIRECTORY__/test/data/fgb/countries.fgb');
+----
+geom	GEOMETRY	YES	NULL	NULL	NULL
+id	VARCHAR	YES	NULL	NULL	NULL
+name	VARCHAR	YES	NULL	NULL	NULL
+
+
+query III
+select id, st_area(geom) from read_fgb('__WORKING_DIRECTORY__/test/data/fgb/countries.fgb') WHERE id = 'SWZ';
+----
+SWZ	1.6399817656175018
