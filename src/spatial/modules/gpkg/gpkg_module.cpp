@@ -5,9 +5,24 @@
 #include <duckdb/main/database.hpp>
 #include <duckdb/parser/parsed_data/create_schema_info.hpp>
 
+#include "sqlite3.h"
+
 namespace duckdb {
 
 namespace {
+
+//======================================================================================================================
+// Options
+//======================================================================================================================
+class GPKGOptions {
+public:
+	// Access mode
+	AccessMode access_mode = AccessMode::READ_WRITE;
+	// Busy time-out in ms
+	idx_t busy_timeout = 5000;
+	// Journal mode
+	string journal_mode;
+};
 
 //======================================================================================================================
 // GPKG Database
@@ -17,7 +32,43 @@ public:
 	void Execute(const string &query) { }
 	idx_t RunPragma(const string &pragma) { }
 	// TODO:
+
+	vector<string> GetTables();
+	vector<string> GetIndexes();
+	vector<string> GetViews();
 };
+
+// TODO: we need to create our own SQLiteDB wrappers
+
+vector<string> GPKGDB::GetTables() {
+	vector<string> result;
+	SQLiteStatement stmt = Prepare("SELECT name FROM sqlite_master WHERE length(sql) > 0 AND type='table'");
+	while (stmt.Step()) {
+		auto table_name = stmt.GetValue<string>(0);
+		result.push_back(std::move(table_name));
+	}
+	return result;
+}
+
+vector<string> GPKGDB::GetIndexes() {
+	vector<string> result;
+	SQLiteStatement stmt = Prepare("SELECT name FROM sqlite_master WHERE length(sql) > 0 AND type='index'");
+	while (stmt.Step()) {
+		auto table_name = stmt.GetValue<string>(0);
+		result.push_back(std::move(table_name));
+	}
+	return result;
+}
+
+vector<string> GPKGDB::GetViews() {
+	vector<string> result;
+	SQLiteStatement stmt = Prepare("SELECT name FROM sqlite_master WHERE length(sql) > 0 AND type='view'");
+	while (stmt.Step()) {
+		auto table_name = stmt.GetValue<string>(0);
+		result.push_back(std::move(table_name));
+	}
+	return result;
+}
 
 //======================================================================================================================
 // GPKG Schema
@@ -56,7 +107,7 @@ class GPKGCatalog final : public Catalog {
 public:
 	static constexpr auto TYPE = "GeoPackage";
 
-	GPKGCatalog(AttachedDatabase &db, const string &path);
+	GPKGCatalog(AttachedDatabase &db, const string &path, GPKGOptions options);
 
 // Storage Callbacks
 	~GPKGCatalog() override = default;
@@ -87,6 +138,8 @@ public:
 private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
 private:
+	//! Options
+	GPKGOptions options;
 	//! The path to the database
 	string path;
 	//! Whether or not the database is in-memory
@@ -287,11 +340,33 @@ void GPKGSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 }
 
 void GPKGSchemaEntry::Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) {
-	// TODO:
+	auto &transaction = GPKGTransaction::Get(context, catalog);
+	switch(type) {
+	case CatalogType::TABLE_ENTRY: {
+		auto entries = transaction.GetDB().GetTables();
+		for (auto &entry_name : entries) {
+			callback(*GetEntry(GetCatalogTransaction(context), type, entry_name));
+		}
+	} break;
+	case CatalogType::VIEW_ENTRY: {
+		auto entries = transaction.GetDB().GetViews();
+		for (auto &entry_name : entries) {
+			callback(*GetEntry(GetCatalogTransaction(context), type, entry_name));
+		}
+	} break;
+	case CatalogType::INDEX_ENTRY: {
+		auto entries = transaction.GetDB().GetIndexes();
+		for (auto &entry_name : entries) {
+			callback(*GetEntry(GetCatalogTransaction(context), type, entry_name));
+		}
+	} break;
+	default:
+		break;
+	}
 }
 
 void GPKGSchemaEntry::Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) {
-	// TODO:
+	throw InternalException("Cannot scan GPKG database without client context!?");
 }
 
 void GPKGSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
@@ -307,8 +382,9 @@ optional_ptr<CatalogEntry> GPKGSchemaEntry::GetEntry(CatalogTransaction transact
 // GPKG Catalog (Implementation)
 //======================================================================================================================
 
-GPKGCatalog::GPKGCatalog(AttachedDatabase &db, const string &path)
-  : Catalog(db), path(path), in_memory(path == ":memory:"), active_in_memory(false) {
+GPKGCatalog::GPKGCatalog(AttachedDatabase &db, const string &path, GPKGOptions options)
+  : Catalog(db), options(std::move(options)), path(path), in_memory(path == ":memory:"),
+	active_in_memory(false) {
 
 	if(InMemory()) {
 		// TODO:
@@ -417,7 +493,20 @@ public:
 	static unique_ptr<Catalog> Attach(StorageExtensionInfo *storage_info, ClientContext &context, AttachedDatabase &db,
 		const string &name, AttachInfo &info, AccessMode access_mode) {
 
-		return make_uniq_base<Catalog, GPKGCatalog>(db, info.path);
+		GPKGOptions options;
+		options.access_mode = access_mode;
+
+		for (auto &entry : info.options) {
+			if (StringUtil::CIEquals(entry.first, "busy_timeout")) {
+				// TODO: Verify
+				options.busy_timeout = entry.second.GetValue<uint64_t>();
+			} else if (StringUtil::CIEquals(entry.first, "journal_mode")) {
+				// TODO: Verify
+				options.journal_mode = entry.second.ToString();
+			}
+		}
+
+		return make_uniq_base<Catalog, GPKGCatalog>(db, info.path, std::move(options));
 	}
 
 	static unique_ptr<TransactionManager> CreateTransactionManager(StorageExtensionInfo *storage_info,
@@ -447,8 +536,8 @@ void GPKGModule::Register(DatabaseInstance &db) {
 	// Register the GPKG module with the database instance
 	auto &config = DBConfig::GetConfig(db);
 
-	// TODO: This is shit, but requires fixing in core DuckDB
-	config.storage_extensions["spatial"] = make_uniq<GPKGStorageExtension>();
+	// TODO: This requires that spatial is initialized first
+	config.storage_extensions["gpkg"] = make_uniq<GPKGStorageExtension>();
 }
 
 } // namespace duckdb
