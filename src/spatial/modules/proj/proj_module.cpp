@@ -13,16 +13,6 @@
 #include "geodesic.h"
 #include "sqlite3.h"
 
-// We embed the whole proj.db in the proj_db.c file, which we then link into the extension binary
-// We can then use the sqlite3 "memvfs" (which we also statically link to) to point to the proj.db database in memory
-// To genereate the proj_db.c file, we use the following command:
-// `xxd -i proj.db > proj_db.c`
-// Then rename the array to proj_db and the length to proj_db_len if necessary
-// We link these from the proj_db.c file externally instead of #include:ing so our IDE doesnt go haywire
-extern "C" unsigned char proj_db[];
-extern "C" unsigned int proj_db_len;
-extern "C" int sqlite3_memvfs_init(sqlite3 *, char **, const sqlite3_api_routines *);
-
 // Specialize hash for std::pair<std::string, std::string> so we can use it as a key in an unordered_map
 template <>
 struct std::hash<std::pair<std::string, std::string>> {
@@ -54,14 +44,14 @@ PJ_CONTEXT *ProjModule::GetThreadProjContext() {
 	// We set the default context proj.db path to the one in the binary here
 	// Otherwise GDAL will try to load the proj.db from the system
 	// Any PJ_CONTEXT we create after this will inherit these settings
-	const auto path = StringUtil::Format("file:/proj.db?ptr=%llu&sz=%lu&max=%lu", static_cast<void *>(proj_db),
-	                                     proj_db_len, proj_db_len);
+	//const auto path = StringUtil::Format("file:/proj.db?ptr=%llu&sz=%lu&max=%lu", static_cast<void *>(proj_db),
+	//                                     proj_db_len, proj_db_len);
 
-	proj_context_set_sqlite3_vfs_name(ctx, "memvfs");
-	const auto ok = proj_context_set_database_path(ctx, path.c_str(), nullptr, nullptr);
-	if (!ok) {
-		throw InternalException("Could not set proj.db path");
-	}
+	//proj_context_set_sqlite3_vfs_name(ctx, "memvfs");
+	//const auto ok = proj_context_set_database_path(ctx, path.c_str(), nullptr, nullptr);
+	//if (!ok) {
+	//	throw InternalException("Could not set proj.db path");
+	//}
 
 	// Dont log errors to stderr
 	proj_log_level(ctx, PJ_LOG_NONE);
@@ -76,15 +66,16 @@ PJ_CONTEXT *ProjModule::GetThreadProjContext() {
 void ProjModule::RegisterVFS(DatabaseInstance &db) {
 
 	// Initialization lock around global proj state
-	static mutex lock;
+	//static mutex lock;
 
-	lock_guard<mutex> g(lock);
+	//lock_guard<mutex> g(lock);
 
 	// we use the sqlite "memvfs" to store the proj.db database in the extension binary itself
 	// this way we don't have to worry about the user having the proj.db database installed
 	// on their system. We therefore have to tell proj to use memvfs as the sqlite3 vfs and
 	// point it to the segment of the binary that contains the proj.db database
 
+	/*
 	sqlite3_initialize();
 	sqlite3_memvfs_init(nullptr, nullptr, nullptr);
 	const auto vfs = sqlite3_vfs_find("memvfs");
@@ -105,6 +96,7 @@ void ProjModule::RegisterVFS(DatabaseInstance &db) {
 	if (!ok) {
 		throw InternalException("Could not set proj.db path");
 	}
+	*/
 }
 
 //######################################################################################################################
@@ -255,16 +247,39 @@ struct ST_Transform {
 
 		GenericExecutor::ExecuteTernary<POINT_TYPE, PROJ_TYPE, PROJ_TYPE, POINT_TYPE>(
 		    args.data[0], args.data[1], args.data[2], result, args.size(),
-		    [&](const POINT_TYPE &point_in, const PROJ_TYPE &source, const PROJ_TYPE target) {
-			    const auto source_str = source.val.GetString();
+		    [&](const POINT_TYPE &point_in, const PROJ_TYPE &sources, const PROJ_TYPE targets) {
+
+		    	/*
+		    	const auto source_str = source.val.GetString();
 			    const auto target_str = target.val.GetString();
 
 			    const auto crs = lstate.GetOrCreateProjection(source_str, target_str, info.normalize);
 
 			    POINT_TYPE point_out;
 			    const auto transformed = proj_trans(crs, PJ_FWD, proj_coord(point_in.a_val, point_in.b_val, 0, 0)).xy;
-			    point_out.a_val = transformed.x;
-			    point_out.b_val = transformed.y;
+				*/
+
+		    	const char* source = "EPSG:2918";
+				const char* target = "EPSG:5070";
+
+		    	double input_point[2] = { 3134690, 10147485.01 }; // Longitude, Latitude
+
+			   // Create crs
+			   PJ_CONTEXT *ctx = proj_context_create();
+			   PJ* crs = proj_create_crs_to_crs(ctx, source, target, NULL);
+
+			   // Transform the point
+			   PJ_COORD input_coord = proj_coord(input_point[0], input_point[1], 0, 0);
+
+			   printf("Input Point: %f, %f\n", input_coord.xy.x, input_coord.xy.y);
+
+			   // Perform the transformation
+			   PJ_COORD output_coord = proj_trans(crs, PJ_FWD, input_coord);
+			   printf("Output Point: %f, %f\n", output_coord.xy.x, output_coord.xy.y);
+
+		    	POINT_TYPE point_out;
+			    point_out.a_val = output_coord.xy.x;
+			    point_out.b_val = output_coord.xy.y;
 
 			    return point_out;
 		    });

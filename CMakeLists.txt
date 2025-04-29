@@ -89,10 +89,10 @@ if(EMSCRIPTEN)
   set(OPENSSL_USE_STATIC_LIBS OFF)
 endif()
 
-find_library(SQLITE3_MEMVFS memvfs)
+#find_library(SQLITE3_MEMVFS memvfs)
 find_package(ZLIB REQUIRED)
 find_package(PROJ REQUIRED)
-find_package(SQLite3 REQUIRED)
+#find_package(SQLite3 REQUIRED)
 find_package(GEOS REQUIRED)
 find_package(GDAL REQUIRED)
 find_package(EXPAT REQUIRED)
@@ -103,9 +103,10 @@ set(EXTENSION_DEPENDENCIES
     GEOS::geos_c
     PROJ::proj
     EXPAT::EXPAT
-    SQLite::SQLite3
-    ZLIB::ZLIB
-    ${SQLITE3_MEMVFS})
+    unofficial::sqlite3::sqlite3
+    ZLIB::ZLIB)
+#    SQLite::SQLite3
+    #${SQLITE3_MEMVFS})
 
 if(SPATIAL_USE_NETWORK)
   message(STATUS "Building with network functionality")
@@ -137,6 +138,21 @@ build_loadable_extension(${TARGET_NAME} ${PARAMETERS} ${EXTENSION_SOURCES})
 
 target_link_libraries(${TARGET_NAME}_loadable_extension
                       ${EXTENSION_DEPENDENCIES})
+
+# Enable LTO if possible (in release mode)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  cmake_policy(SET CMP0069 NEW)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT supported OUTPUT error)
+
+  if(supported )
+    message(STATUS "IPO / LTO enabled")
+    set_property(TARGET ${TARGET_NAME}_loadable_extension PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set_property(TARGET ${EXTENSION_NAME} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+  else()
+    message(STATUS "IPO / LTO not supported: <${error}>")
+  endif()
+endif()
 
 install(
   TARGETS ${EXTENSION_NAME}

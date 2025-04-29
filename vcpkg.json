@@ -6,6 +6,10 @@
     "geos",
     "expat",
     {
+      "name": "proj",
+      "default-features": false
+    },
+    {
       "name": "curl",
       "platform": "!wasm32 & !ios & !android",
       "features": ["openssl"],
