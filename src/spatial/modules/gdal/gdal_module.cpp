@@ -375,7 +375,7 @@ public:
 
 		auto file_vector = fs.Glob(file_glob);
 		for (auto &file : file_vector) {
-			auto tmp = AddPrefix(file);
+			auto tmp = AddPrefix(file.path);
 			files.AddString(tmp.c_str());
 		}
 		return files.StealList();
@@ -460,6 +460,432 @@ GDALClientContextState &GDALClientContextState::GetOrCreate(ClientContext &conte
 //######################################################################################################################
 // Functions
 //######################################################################################################################
+
+class GDALScanBindData final : public TableFunctionData {
+public:
+	GDALDataset& dataset;
+	ArrowTableType arrow_table = {};
+	ArrowSchemaWrapper schema_root = {};
+
+	explicit GDALScanBindData(GDALDataset &dataset_p)
+	    : dataset(dataset_p) {
+	}
+};
+
+class GDALScanLocalState final : public ArrowScanLocalState {
+public:
+	GDALScanLocalState(unique_ptr<ArrowArrayWrapper> &current_chunk, ClientContext &context)
+	    : ArrowScanLocalState(std::move(current_chunk), context) {
+	}
+};
+
+class GDALScanGlobalState final : public ArrowScanGlobalState {
+public:
+	atomic<idx_t> lines_read = {0};
+};
+
+struct GDALScanFunction : ArrowTableFunction {
+	static unique_ptr<GlobalTableFunctionState> InitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+
+	}
+
+	static unique_ptr<LocalTableFunctionState> InitLocal(ExecutionContext &context, TableFunctionInitInput &input,
+		GlobalTableFunctionState *gstate_p) {
+
+		auto &gstate = gstate_p->Cast<GDALScanGlobalState>();
+		auto chunk = make_uniq<ArrowArrayWrapper>();
+		auto result = make_uniq<GDALScanLocalState>(std::move(chunk), context.client);
+
+		result->column_ids = input.column_ids;
+		result->filters = input.filters.get();
+
+		if (input.CanRemoveFilterColumns()) {
+			result->all_columns.Initialize(context.client, gstate.scanned_types);
+		}
+
+		if (!ArrowTableFunction::ArrowScanParallelStateNext(context.client, input.bind_data.get(), *result, gstate)) {
+			return nullptr;
+		}
+
+		return std::move(result);
+
+	}
+
+	static void Execute(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
+
+		if (!input.local_state) {
+			return;
+		}
+		const auto &bdata = input.bind_data->CastNoConst<GDALScanBindData>(); // FIXME
+
+		auto &lstate = input.local_state->Cast<GDALScanLocalState>();
+		auto &gstate = input.global_state->Cast<GDALScanGlobalState>();
+
+		//! Out of tuples in this chunk
+		if (lstate.chunk_offset >= static_cast<idx_t>(lstate.chunk->arrow_array.length)) {
+			if (!ArrowTableFunction::ArrowScanParallelStateNext(context, input.bind_data.get(), lstate, gstate)) {
+				return;
+			}
+		}
+		const auto output_size = MinValue<idx_t>(STANDARD_VECTOR_SIZE, NumericCast<idx_t>(lstate.chunk->arrow_array.length) - lstate.chunk_offset);
+
+		gstate.lines_read += output_size;
+
+		if (gstate.CanRemoveFilterColumns()) {
+			// Execute into the lstate.all_columns chunk, and project only the output columns we need
+			lstate.all_columns.Reset();
+			lstate.all_columns.SetCardinality(output_size);
+			ArrowTableFunction::ArrowToDuckDB(lstate, bdata.arrow_table.GetColumns(), lstate.all_columns, gstate.lines_read - output_size);
+			output.ReferenceColumns(lstate.all_columns, gstate.projection_ids);
+		} else {
+			// Otherwise, execute into the output chunk
+			output.SetCardinality(output_size);
+			ArrowTableFunction::ArrowToDuckDB(lstate, bdata.arrow_table.GetColumns(), output, gstate.lines_read - output_size);
+		}
+
+		// TODO: Keep WKB!
+
+		output.Verify();
+		lstate.chunk_offset += output.size();
+	}
+
+};
+
+
+//======================================================================================================================
+// Multi File Read
+//======================================================================================================================
+
+class GDALFileReaderOptions final : public BaseFileReaderOptions {
+	// TODO:
+};
+
+class GDALFileReader final : public BaseFileReader {
+public:
+	GDALFileReader(ClientContext &context, const string &file_name) : BaseFileReader(file_name) {
+		// factory = make_uniq<FileIPCStreamFactory>(context, file_name);
+		// factory->InitReader();
+		// factory->GetFileSchema(schema_root);
+
+		// TODO: pass options
+		CPLStringList dataset_open_options;
+		CPLStringList dataset_allowed_drivers;
+		CPLStringList dataset_sibling_files;
+
+		// TODO: Prefix filename with context
+		dataset = GDALDatasetUniquePtr(GDALDataset::Open(file_name.c_str(), GDAL_OF_VECTOR | GDAL_OF_VERBOSE_ERROR,
+		                                                 dataset_allowed_drivers, dataset_open_options,
+		                                                 dataset_sibling_files));
+
+		// TODO: pass layer index
+		const auto layer = dataset->GetLayer(0);
+
+		// PAss layer options
+		CPLStringList layer_creation_options;
+
+		// Get the stream
+		ArrowArrayStreamWrapper stream;
+		if (!layer->GetArrowStream(&stream.arrow_array_stream, layer_creation_options)) {
+			// layer is owned by GDAL, we do not need to destory it
+			throw IOException("Could not get arrow stream from layer");
+		}
+
+		// Get the schema
+		stream.GetSchema(schema_root);
+
+		DBConfig &config = DatabaseInstance::GetDatabase(context).config;
+		ArrowTableFunction::PopulateArrowTableType(config, arrow_table_type, schema_root, names, types);
+		QueryResult::DeduplicateColumns(names);
+		if (types.empty()) {
+			throw InvalidInputException("Provided table/dataframe must have at least one column");
+		}
+		columns = MultiFileColumnDefinition::ColumnsFromNamesAndTypes(names, types);
+	}
+
+	~GDALFileReader() override {
+		// Release is done by the scanner
+		schema_root.arrow_schema.release = nullptr;
+	};
+
+	// The underlying GDAL dataset
+	GDALDatasetUniquePtr dataset;
+
+	string GetReaderType() const override {
+		return "GDAL";
+	}
+	const vector<string> &GetNames() {
+		return names;
+	}
+	const vector<LogicalType> &GetTypes() {
+		return types;
+	}
+
+	ArrowSchemaWrapper schema_root;
+	ArrowTableType arrow_table_type;
+
+private:
+	vector<string> names;
+	vector<LogicalType> types;
+};
+
+// Bind data
+class GDALMultiFileData final : public TableFunctionData {
+public:
+	GDALMultiFileData() = default;
+
+	unique_ptr<GDALFileReader> reader;
+};
+
+// File Global State
+class GDALFileGlobalState final : public GlobalTableFunctionState {
+public:
+	GDALFileGlobalState(ClientContext& context_p, idx_t total_file_count,
+						 const MultiFileBindData& bind_data,
+						 MultiFileGlobalState& global_state)
+		: global_state(global_state), context(context_p) {};
+
+	~GDALFileGlobalState() override = default;
+
+	const MultiFileGlobalState& global_state;
+	ClientContext& context;
+	set<idx_t> files;
+};
+
+// File Local State
+class GDALFileLocalState final : public LocalTableFunctionState {
+public:
+	explicit GDALFileLocalState(ExecutionContext& execution_context)
+		: execution_context(execution_context) {};
+	//! Factory Pointer
+	shared_ptr<GDALFileReader> reader;
+
+	ExecutionContext& execution_context;
+
+	//! Each local state refers to an Arrow Scan on a local file
+	unique_ptr<TableFunctionData> local_arrow_function_data;
+	unique_ptr<TableFunctionInitInput> init_input;
+
+	unique_ptr<GlobalTableFunctionState> local_arrow_global_state;
+	unique_ptr<LocalTableFunctionState> local_arrow_local_state;
+	unique_ptr<TableFunctionInput> table_function_input;
+};
+
+struct GDALMultiFileInfo {
+
+	static unique_ptr<BaseFileReaderOptions> InitializeOptions(ClientContext &context,
+	                                                           optional_ptr<TableFunctionInfo> info) {
+		return make_uniq_base<BaseFileReaderOptions, GDALFileReaderOptions>();
+	}
+
+	static bool ParseCopyOption(ClientContext &context, const string &key, const vector<Value> &values,
+	                            BaseFileReaderOptions &options, vector<string> &expected_names,
+	                            vector<LogicalType> &expected_types) {
+
+		// We currently do not have any options for the scanner, so we always return false
+		return false;
+	}
+
+	static bool ParseOption(ClientContext &context, const string &key, const Value &val, MultiFileOptions &file_options,
+	                        BaseFileReaderOptions &options) {
+		// We currently do not have any options for the scanner, so we always return false
+		return false;
+	}
+
+	static void FinalizeCopyBind(ClientContext &context, BaseFileReaderOptions &options,
+	                             const vector<string> &expected_names, const vector<LogicalType> &expected_types) {
+		// No-op
+	}
+
+	static unique_ptr<TableFunctionData> InitializeBindData(MultiFileBindData &multi_file_data,
+	                                                        unique_ptr<BaseFileReaderOptions> options) {
+
+		// Bind
+		auto result = make_uniq<GDALMultiFileData>();
+
+		return std::move(result);
+	}
+
+	//! This is where the actual binding must happen, so in this function we either:
+	//! 1. union_by_name = False. We set the schema/name depending on the first file
+	//! 2. union_by_name = True.
+	static void BindReader(ClientContext &context, vector<LogicalType> &return_types, vector<string> &names,
+	                       MultiFileBindData &bind_data) {
+
+		GDALFileReaderOptions options;
+		auto &multi_file_list = *bind_data.file_list;
+		if (!bind_data.file_options.union_by_name) {
+			bind_data.reader_bind = bind_data.multi_file_reader->BindReader<GDALMultiFileInfo>(
+			    context, return_types, names, *bind_data.file_list, bind_data, options, bind_data.file_options);
+		} else {
+			bind_data.reader_bind = bind_data.multi_file_reader->BindUnionReader<GDALMultiFileInfo>(
+			    context, return_types, names, multi_file_list, bind_data, options, bind_data.file_options);
+		}
+		D_ASSERT(names.size() == return_types.size());
+	}
+
+	static void FinalizeBindData(MultiFileBindData &multi_file_data) {
+		// No-op
+	}
+
+	static void GetBindInfo(const TableFunctionData &bind_data, BindInfo &info) {
+		// No-op
+	}
+
+	static optional_idx MaxThreads(const MultiFileBindData &bind_data_p, const MultiFileGlobalState &global_state,
+	                               FileExpandResult expand_result) {
+		if (expand_result == FileExpandResult::MULTIPLE_FILES) {
+			// always launch max threads if we are reading multiple files
+			return {};
+		}
+		// Otherwise, only one thread
+		return 1;
+	}
+
+	static unique_ptr<GlobalTableFunctionState> InitializeGlobalState(ClientContext &context, MultiFileBindData &bind_data, MultiFileGlobalState &global_state) {
+
+		auto result = make_uniq<GDALFileGlobalState>(
+			context, bind_data.file_list->GetTotalFileCount(), bind_data, global_state);
+
+		return std::move(result);
+	}
+
+	static unique_ptr<LocalTableFunctionState> InitializeLocalState(ExecutionContext &context,
+	                                                                GlobalTableFunctionState &function_state) {
+		auto result = make_uniq<GDALFileLocalState>(context);
+
+		return std::move(result);
+	}
+
+	static shared_ptr<BaseFileReader> CreateReader(ClientContext &context, GlobalTableFunctionState &gstate,
+	                                               BaseUnionData &union_data, const MultiFileBindData &bind_data_p) {
+
+		return make_shared_ptr<GDALFileReader>(context, union_data.GetFileName());
+	}
+
+	static shared_ptr<BaseFileReader> CreateReader(ClientContext &context, GlobalTableFunctionState &gstate,
+	                                               const string &filename, idx_t file_idx,
+	                                               const MultiFileBindData &bind_data) {
+		return make_shared_ptr<GDALFileReader>(context, filename);
+	}
+
+	static shared_ptr<BaseFileReader> CreateReader(ClientContext &context, const string &filename,
+	                                               GDALFileReaderOptions &options,
+	                                               const MultiFileOptions &file_options) {
+		return make_shared_ptr<GDALFileReader>(context, filename);
+	}
+
+	static shared_ptr<BaseUnionData> GetUnionData(shared_ptr<BaseFileReader> reader_p, idx_t file_idx) {
+		auto& scan = reader_p->Cast<GDALFileReader>();
+		auto data = make_shared_ptr<BaseUnionData>(reader_p->GetFileName());
+		if (file_idx == 0) {
+			data->names = scan.GetNames();
+			data->types = scan.GetTypes();
+			data->reader = std::move(reader_p);
+		} else {
+			data->names = scan.GetNames();
+			data->types = scan.GetTypes();
+		}
+		return data;
+	}
+
+	static void FinalizeReader(ClientContext &context, BaseFileReader &reader, GlobalTableFunctionState &) {
+		// no-op
+	}
+
+	static bool TryInitializeScan(ClientContext &context, const shared_ptr<BaseFileReader> &reader,
+	                              GlobalTableFunctionState &gstate_p, LocalTableFunctionState &lstate_p) {
+		auto& gstate = gstate_p.Cast<GDALFileGlobalState>();
+		auto& lstate = lstate_p.Cast<GDALFileLocalState>();
+
+		if (gstate.files.find(reader->file_list_idx.GetIndex()) != gstate.files.end()) {
+			// Return false because we don't currently support more than one thread
+			// scanning a file. GDAL does not guarantee thread-safety within drivers
+			return false;
+		}
+
+		gstate.files.insert(reader->file_list_idx.GetIndex());
+
+		lstate.reader = shared_ptr_cast<BaseFileReader, GDALFileReader>(reader);
+
+		// Create the bind data for the function (pass file name and shit here)
+		// TODO: Pass dataset ptr?
+		lstate.local_arrow_function_data = make_uniq_base<TableFunctionData, GDALScanBindData>(
+			*lstate.reader->dataset
+		);
+
+		auto &bdata = lstate.local_arrow_function_data->Cast<GDALScanBindData>();
+
+		// Pass schema root and arrow table type
+		bdata.arrow_table = lstate.reader->arrow_table_type;
+		bdata.schema_root =	lstate.reader->schema_root;
+
+		if (!reader->column_indexes.empty()) {
+			lstate.init_input = make_uniq<TableFunctionInitInput>(
+				*lstate.local_arrow_function_data, reader->column_indexes,
+				gstate.global_state.projection_ids, reader->filters);
+		} else {
+			lstate.init_input = make_uniq<TableFunctionInitInput>(
+				*lstate.local_arrow_function_data, gstate.global_state.column_indexes,
+				gstate.global_state.projection_ids, reader->filters);
+		}
+
+		// Initialize the global state
+		lstate.local_arrow_global_state =
+			GDALScanFunction::InitGlobal(context, *lstate.init_input);
+
+		// Initialize the local state
+		lstate.local_arrow_local_state =
+			GDALScanFunction::InitLocal(lstate.execution_context, *lstate.init_input,
+												   lstate.local_arrow_global_state.get());
+		lstate.table_function_input = make_uniq<TableFunctionInput>(
+			lstate.local_arrow_function_data.get(), lstate.local_arrow_local_state.get(),
+			lstate.local_arrow_global_state.get());
+		return true;
+	}
+
+	static void Scan(ClientContext &context, BaseFileReader &reader, GlobalTableFunctionState &global_state,
+	                 LocalTableFunctionState &local_state, DataChunk &chunk) {
+		const auto& lstate = local_state.Cast<GDALFileLocalState>();
+
+		GDALScanFunction::Execute(context, *lstate.table_function_input, chunk);
+	}
+
+	static void FinishFile(ClientContext &context, GlobalTableFunctionState &global_state, BaseFileReader &reader) {
+		// Drop the GDAL unique ptr?
+	}
+
+	static void FinishReading(ClientContext &context, GlobalTableFunctionState &global_state,
+	                          LocalTableFunctionState &local_state) {
+
+	}
+
+	static unique_ptr<NodeStatistics> GetCardinality(const MultiFileBindData &bind_data, idx_t file_count) {
+		// TODO: Get this from the reader
+		return make_uniq<NodeStatistics>();
+	}
+
+	static unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, BaseFileReader &reader, const string &name) {
+		return nullptr;
+	}
+
+	static double GetProgressInFile(ClientContext &context, const BaseFileReader &reader) {
+		// TODO: We cant really do much here...? Unless we have cardinality. Maybe.
+		return 100;
+
+		//auto& file_scan = reader.Cast<GDALFileReader>();
+		//if (!file_scan.factory->reader) {
+		//	// We are done with this file
+		//	return 100;
+		//}
+		//auto file_reader =
+		//	reinterpret_cast<IPCFileStreamReader*>(file_scan.factory->reader.get());
+		//return file_reader->GetProgress();
+	}
+
+	static void GetVirtualColumns(ClientContext &context, MultiFileBindData &bind_data, virtual_column_map_t &result) {
+		// We have no virtual columns
+	}
+};
 
 //======================================================================================================================
 // ST_Read
