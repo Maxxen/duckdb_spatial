@@ -328,4 +328,99 @@ void Serde::Deserialize(sgl::geometry &result, ArenaAllocator &arena, const char
 	DeserializeRecursive(cursor, result, has_z, has_m, arena);
 }
 
+static void DeserializePreparedRecursive(BinaryReader &cursor, sgl::prepared_geometry &geom, const bool has_z,
+                                         const bool has_m, GeometryAllocator &alloc) {
+	const auto count = cursor.Read<uint32_t>();
+	switch (geom.get_type()) {
+	case sgl::geometry_type::POINT:
+	case sgl::geometry_type::LINESTRING: {
+		const auto verts = cursor.Reserve(count * geom.get_vertex_size());
+		geom.set_vertex_data(verts, count);
+	} break;
+	case sgl::geometry_type::POLYGON: {
+		auto ring_cursor = cursor;
+		cursor.Skip((count * 4) + (count % 2 == 1 ? 4 : 0));
+		for (uint32_t i = 0; i < count; i++) {
+			const auto ring_count = ring_cursor.Read<uint32_t>();
+			const auto verts = cursor.Reserve(ring_count * geom.get_vertex_size());
+
+			auto ring_mem = alloc.alloc(sizeof(sgl::prepared_geometry));
+			const auto ring = new (ring_mem) sgl::prepared_geometry(sgl::geometry_type::LINESTRING);
+
+			ring->set_z(has_z);
+			ring->set_m(has_m);
+			ring->set_vertex_data(verts, ring_count);
+
+			ring->index.build(&alloc, ring->get_vertex_size(), ring->get_vertex_data(), ring->get_count());
+			ring->index.is_ccw = sgl::linestring::signed_area(ring) >= 0;
+			ring->set_prepared(true);
+
+			geom.append_part(ring);
+		}
+	} break;
+	case sgl::geometry_type::MULTI_POINT:
+	case sgl::geometry_type::MULTI_LINESTRING:
+	case sgl::geometry_type::MULTI_POLYGON:
+	case sgl::geometry_type::MULTI_GEOMETRY: {
+		for (uint32_t i = 0; i < count; i++) {
+			const auto part_type = static_cast<sgl::geometry_type>(cursor.Read<uint32_t>() + 1);
+			auto part_mem = alloc.alloc(sizeof(sgl::prepared_geometry));
+			const auto part = new (part_mem) sgl::prepared_geometry(part_type);
+			part->set_z(has_z);
+			part->set_m(has_m);
+
+			DeserializePreparedRecursive(cursor, *part, has_z, has_m, alloc);
+
+			geom.append_part(part);
+		}
+	} break;
+	default:
+		break;
+	}
+}
+
+void Serde::DeserializePrepared(sgl::prepared_geometry &result, ArenaAllocator &arena, const char *buffer,
+                                size_t buffer_size) {
+
+	BinaryReader cursor(buffer, buffer_size);
+
+	const auto type = static_cast<sgl::geometry_type>(cursor.Read<uint8_t>() + 1);
+	const auto flags = cursor.Read<uint8_t>();
+	cursor.Skip(sizeof(uint16_t));
+	cursor.Skip(sizeof(uint32_t)); // padding
+
+	// Parse flags
+	const auto has_z = (flags & 0x01) != 0;
+	const auto has_m = (flags & 0x02) != 0;
+	const auto has_bbox = (flags & 0x04) != 0;
+
+	const auto format_v1 = (flags & 0x40) != 0;
+	const auto format_v0 = (flags & 0x80) != 0;
+
+	if (format_v1 || format_v0) {
+		// Unsupported version, throw an error
+		throw NotImplementedException(
+		    "This geometry seems to be written with a newer version of the DuckDB spatial library that is not "
+		    "compatible with this version. Please upgrade your DuckDB installation.");
+	}
+
+	if (has_bbox) {
+		// Skip past bbox if present
+		cursor.Skip(sizeof(float) * 2 * (2 + has_z + has_m));
+	}
+
+	// Create root geometry
+	result.set_type(type);
+	result.set_z(has_z);
+	result.set_m(has_m);
+
+	// Read the first type
+	cursor.Read<uint32_t>();
+
+	GeometryAllocator alloc(arena);
+
+	// Deserialize the geometry
+	DeserializePreparedRecursive(cursor, result, has_z, has_m, alloc);
+}
+
 } // namespace duckdb

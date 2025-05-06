@@ -93,6 +93,20 @@ struct box_xy {
 	bool intersects(const box_xy &other) const {
 		return !(min.x > other.max.x || max.x < other.min.x || min.y > other.max.y || max.y < other.min.y);
 	}
+
+	bool contains(const vertex_xy &other) const {
+		return (min.x <= other.x && max.x >= other.x && min.y <= other.y && max.y >= other.y);
+	}
+
+	double distance_to(const vertex_xy &other) const {
+		if (contains(other)) {
+			return 0.0;
+		}
+
+		const auto dx = std::max(min.x - other.x, other.x - max.x);
+		const auto dy = std::max(min.y - other.y, other.y - max.y);
+		return std::hypot(dx, dy);
+	}
 };
 
 struct box_xyzm {
@@ -263,8 +277,10 @@ public:
 
 	bool has_z() const;
 	bool has_m() const;
+	bool is_prepared() const;
 	bool set_z(bool value);
 	bool set_m(bool value);
+	bool set_prepared(bool value);
 
 	bool is_single_part() const;
 	bool is_multi_part() const;
@@ -314,6 +330,7 @@ public:
 	static std::string type_to_string(geometry_type type);
 };
 
+
 } // namespace sgl
 
 //--------------------------------------------------------------------------
@@ -336,6 +353,19 @@ inline bool geometry::has_z() const {
 
 inline bool geometry::has_m() const {
 	return flag & 0x02;
+}
+
+inline bool geometry::is_prepared() const {
+	return flag & 0x04;
+}
+
+inline bool geometry::set_prepared(const bool value) {
+	if (value) {
+		flag |= 0x04;
+	} else {
+		flag &= ~0x04;
+	}
+	return value;
 }
 
 inline bool geometry::set_z(const bool value) {
@@ -576,7 +606,7 @@ inline vertex_xyzm geometry::get_vertex_xyzm(const uint32_t n) const {
 	const auto vertex_buffer = get_vertex_data();
 	const auto vertex_offset = vertex_buffer + vertex_stride * n;
 
-	vertex_xyzm vertex = {0};
+	vertex_xyzm vertex = {0, 0, 0, 0};
 	memcpy(&vertex, vertex_offset, vertex_stride);
 	return vertex;
 }
@@ -615,6 +645,40 @@ inline std::string geometry::type_to_string(const geometry_type type) {
 
 } // namespace sgl
 
+//----------------------------------------------------------------------------------------------------------------------
+// Prepared Geometry
+//----------------------------------------------------------------------------------------------------------------------
+namespace sgl {
+
+struct n_index {
+	static constexpr auto NODE_SIZE = 16;
+
+	struct level {
+		box_xy*  entry_array = nullptr;
+		uint32_t entry_count = 0;
+	};
+
+	level*   level_array = nullptr;
+	uint32_t level_count = 0;
+	bool is_ccw = false;
+
+	void build(allocator* alloc, uint32_t vertex_width, const void *vertex_array, uint32_t vertex_count);
+	bool contains(const vertex_xy *v, uint32_t vertex_width, const void *vertex_array) const;
+	double distance(const vertex_xy *v, uint32_t vertex_width, const void *vertex_array) const;
+};
+
+
+struct prepared_geometry : geometry {
+
+	prepared_geometry() = default;
+	explicit prepared_geometry(const geometry_type type, const bool has_z = false, const bool has_m = false)
+		: geometry(type, has_z, has_m) {
+	}
+
+	n_index	index = {};
+};
+
+}
 //--------------------------------------------------------------------------
 // Operations
 //--------------------------------------------------------------------------
@@ -925,7 +989,7 @@ double length(const geometry *geom);
 size_t vertex_count(const geometry *geom);
 int32_t max_surface_dimension(const geometry *geom, bool ignore_empty);
 
-double distance(const geometry* lhs, const geometry* rhs);
+double euclidean_distance(const geometry* lhs, const geometry* rhs);
 
 // This will NOT visit polygon rings if the requested dimension is 1
 typedef void (*visit_func)(void *state, const geometry *part);

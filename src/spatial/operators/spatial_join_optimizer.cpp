@@ -43,7 +43,7 @@ unique_ptr<Expression> TryGetInversePredicate(ClientContext &context, unique_ptr
 
 	if (it->first == it->second) {
 		// We've already swapped the child, so just return the expression
-		return std::move(expr);
+		return expr;
 	}
 
 	// Get the function from the catalog

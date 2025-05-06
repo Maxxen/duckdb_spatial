@@ -926,7 +926,7 @@ struct ST_Distance : SymmetricPreparedBinaryFunction<ST_Distance, double> {
 		return lhs.distance_to(rhs);
 	}
 	static void Register(DatabaseInstance &db) {
-		FunctionBuilder::RegisterScalar(db, "ST_Distance", [](ScalarFunctionBuilder &func) {
+		FunctionBuilder::RegisterScalar(db, "ST_Distance_Geos", [](ScalarFunctionBuilder &func) {
 			func.AddVariant([](ScalarFunctionVariantBuilder &variant) {
 				variant.AddParameter("geom1", GeoTypes::GEOMETRY());
 				variant.AddParameter("geom2", GeoTypes::GEOMETRY());

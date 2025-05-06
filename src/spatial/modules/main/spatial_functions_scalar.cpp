@@ -41,6 +41,7 @@ public:
 
 	// De/Serialize geometries
 	void Deserialize(const string_t &blob, sgl::geometry &geom);
+	void DeserializePrepared(const string_t &blob, sgl::prepared_geometry &geom);
 	sgl::geometry *DeserializeToHeap(const string_t &blob);
 	string_t Serialize(Vector &vector, const sgl::geometry &geom);
 
@@ -69,6 +70,10 @@ LocalState &LocalState::ResetAndGet(ExpressionState &state) {
 
 void LocalState::Deserialize(const string_t &blob, sgl::geometry &geom) {
 	Serde::Deserialize(geom, arena, blob.GetDataUnsafe(), blob.GetSize());
+}
+
+void LocalState::DeserializePrepared(const string_t &blob, sgl::prepared_geometry &geom) {
+	Serde::DeserializePrepared(geom, arena, blob.GetDataUnsafe(), blob.GetSize());
 }
 
 sgl::geometry *LocalState::DeserializeToHeap(const string_t &blob) {
@@ -2279,6 +2284,64 @@ struct ST_Distance {
 	}
 
 	//------------------------------------------------------------------------------------------------------------------
+	// Geometry
+	//------------------------------------------------------------------------------------------------------------------
+	static void ExecuteGeometry(DataChunk &args, ExpressionState &state, Vector &result) {
+		auto &lstate = LocalState::ResetAndGet(state);
+
+		auto &lhs_vec = args.data[0];
+		auto &rhs_vec = args.data[1];
+
+		const auto lhs_is_const =
+		    lhs_vec.GetVectorType() == VectorType::CONSTANT_VECTOR && !ConstantVector::IsNull(lhs_vec);
+		const auto rhs_is_const =
+		    rhs_vec.GetVectorType() == VectorType::CONSTANT_VECTOR && !ConstantVector::IsNull(rhs_vec);
+
+		if (lhs_is_const && rhs_is_const) {
+			// Both are const, just execute once
+			result.SetVectorType(VectorType::CONSTANT_VECTOR);
+			const auto &lhs_blob = ConstantVector::GetData<string_t>(lhs_vec)[0];
+			const auto &rhs_blob = ConstantVector::GetData<string_t>(rhs_vec)[0];
+			sgl::geometry lhs_geom;
+			sgl::geometry rhs_geom;
+			lstate.Deserialize(lhs_blob, lhs_geom);
+			lstate.Deserialize(rhs_blob, rhs_geom);
+
+			ConstantVector::GetData<double>(result)[0] = sgl::ops::euclidean_distance(&lhs_geom, &rhs_geom);
+		} else if (lhs_is_const != rhs_is_const) {
+			// One of the two is const, prepare the const one and execute on the non-const one
+			auto &const_vec = lhs_is_const ? lhs_vec : rhs_vec;
+			auto &probe_vec = lhs_is_const ? rhs_vec : lhs_vec;
+
+			const auto &const_blob = ConstantVector::GetData<string_t>(const_vec)[0];
+			sgl::prepared_geometry const_geom;
+			lstate.DeserializePrepared(const_blob, const_geom);
+
+			UnaryExecutor::Execute<string_t, double>(probe_vec, result, args.size(), [&](const string_t &probe_blob) {
+				sgl::geometry probe_geom;
+				lstate.Deserialize(probe_blob, probe_geom);
+
+				return sgl::ops::euclidean_distance(&const_geom, &probe_geom);
+			});
+		} else {
+			BinaryExecutor::Execute<string_t, string_t, double>(
+			    args.data[0], args.data[1], result, args.size(),
+			    [&](const string_t &lhs_blob, const string_t &rhs_blob) {
+				    // Deserialize the geometries
+				    sgl::prepared_geometry lhs_geom;
+				    sgl::prepared_geometry rhs_geom;
+
+				    lstate.DeserializePrepared(lhs_blob, lhs_geom);
+				    lstate.DeserializePrepared(rhs_blob, rhs_geom);
+
+				    const auto distance = sgl::ops::euclidean_distance(&lhs_geom, &rhs_geom);
+
+				    return distance;
+			    });
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------------------------
 	// Documentation
 	//------------------------------------------------------------------------------------------------------------------
 	// TODO: add example/description
@@ -2290,6 +2353,15 @@ struct ST_Distance {
 	//------------------------------------------------------------------------------------------------------------------
 	static void Register(DatabaseInstance &db) {
 		FunctionBuilder::RegisterScalar(db, "ST_Distance", [](ScalarFunctionBuilder &func) {
+			func.AddVariant([](ScalarFunctionVariantBuilder &variant) {
+				variant.AddParameter("geom1", GeoTypes::GEOMETRY());
+				variant.AddParameter("geom2", GeoTypes::GEOMETRY());
+				variant.SetReturnType(LogicalType::DOUBLE);
+
+				variant.SetInit(LocalState::Init);
+				variant.SetFunction(ExecuteGeometry);
+			});
+
 			func.AddVariant([](ScalarFunctionVariantBuilder &variant) {
 				variant.AddParameter("point1", GeoTypes::POINT_2D());
 				variant.AddParameter("point2", GeoTypes::POINT_2D());

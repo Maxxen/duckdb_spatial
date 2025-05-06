@@ -2102,39 +2102,113 @@ void extract_polygons(sgl::geometry *result, sgl::geometry *geom) {
 	geom->filter_parts(result, select_polygons, handle_polygons);
 }
 
-
 //------------------------------------------------------------------------------
-// Distance
+// Point in Polygon
 //------------------------------------------------------------------------------
-static double point_point_distance(const sgl::geometry *lhs, const sgl::geometry *rhs) {
-	SGL_ASSERT(lhs->get_type() == sgl::geometry_type::POINT);
-	SGL_ASSERT(rhs->get_type() == sgl::geometry_type::POINT);
 
-	if(lhs->is_empty() || rhs->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
+// TODO: Make robust
+int orient2d_fast(const vertex_xy &p, const vertex_xy &q, const vertex_xy &r) {
+	const auto det_l = (p.x - r.x) * (q.y - r.y);
+	const auto det_r = (p.y - r.y) * (q.x - r.x);
+	const auto det = det_l - det_r;
+	return (det > 0) - (det < 0);
+}
+
+enum class point_in_polygon_result {
+	INVALID = 0,
+	INTERIOR,
+	EXTERIOR,
+	BOUNDARY,
+};
+
+static point_in_polygon_result vertex_in_ring(const sgl::vertex_xy *vert_p, const sgl::geometry *ring) {
+
+	if(ring->get_count() < 3) {
+		// Degenerate case, should not happen
+		// TODO: Return something better?
+		return point_in_polygon_result::INVALID;
 	}
 
-	const auto lhs_vertex = lhs->get_vertex_xy(0);
-	const auto rhs_vertex = rhs->get_vertex_xy(0);
 
-	return std::hypot(lhs_vertex.x - rhs_vertex.x, lhs_vertex.y - rhs_vertex.y);
+	if(ring->is_prepared()) {
+		auto &prep = *static_cast<const sgl::prepared_geometry *>(ring);
+		if(prep.index.contains(vert_p, ring->get_vertex_size(), ring->get_vertex_data())) {
+			return point_in_polygon_result::INTERIOR;
+		}
+	}
+
+
+	const auto vertex_array = ring->get_vertex_data();
+	const auto vertex_width = ring->get_vertex_size();
+	const auto vertex_count = ring->get_count();
+
+	const vertex_xy &vert = *vert_p;
+	vertex_xy prev = {0, 0};
+	vertex_xy curr = {0, 0};
+
+	uint32_t crossings = 0;
+
+	memcpy(&prev, vertex_array, sizeof(vertex_xy));
+	for(uint32_t i = 1; i < vertex_count; i++) {
+		memcpy(&curr, vertex_array + i * vertex_width, sizeof(vertex_xy));
+
+		if(prev.x < vert.x && curr.x < vert.x) {
+			// The point is to the left of the segment
+			continue;
+		}
+
+		if(curr.x == vert.x && curr.y == vert.y) {
+			// The point is on the segment, they share a vertex
+			return point_in_polygon_result::BOUNDARY;
+		}
+
+		if(prev.y == vert.y && curr.y == vert.y) {
+			// The segment is horizontal, check if the point is within the min/max x
+			double minx = prev.x;
+			double maxx = curr.x;
+
+			if(minx > maxx) {
+				minx = curr.x;
+				maxx = prev.x;
+			}
+
+			if(vert.x >= minx && vert.x <= maxx) {
+				// if its inside, then its on the boundary
+				return point_in_polygon_result::BOUNDARY;
+			}
+
+			// otherwise it has no impact on the result
+			continue;
+		}
+
+		if((prev.y > vert.y && curr.y <= vert.y) || (curr.y > vert.y && prev.y <= vert.y)) {
+			int sign = orient2d_fast(prev, curr, vert);
+			if(sign == 0) {
+				return point_in_polygon_result::BOUNDARY;
+			}
+
+			if(curr.y < prev.y) {
+				sign = -sign;
+			}
+
+			if(sign > 0) {
+				crossings++;
+			}
+		}
+	}
+
+	// Even number of crossings means the point is outside the polygon
+	return crossings % 2 == 0
+		? point_in_polygon_result::EXTERIOR
+		: point_in_polygon_result::INTERIOR;
 }
 
-/*
-function sqr(x) { return x * x }
-function dist2(v, w) { return sqr(v.x - w.x) + sqr(v.y - w.y) }
-function distToSegmentSquared(p, v, w) {
-var l2 = dist2(v, w);
-if (l2 == 0) return dist2(p, v);
-var t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
-t = Math.max(0, Math.min(1, t));
-return dist2(p, { x: v.x + t * (w.x - v.x),
-y: v.y + t * (w.y - v.y) });
-}
-function distToSegment(p, v, w) { return Math.sqrt(distToSegmentSquared(p, v, w)); }
- */
+//------------------------------------------------------------------------------
+// Distance Utils
+//------------------------------------------------------------------------------
 
 static double vertex_distance_squared(const vertex_xy *lhs, const vertex_xy *rhs) {
+
 	return std::pow(lhs->x - rhs->x, 2) + std::pow(lhs->y - rhs->y, 2);
 }
 
@@ -2142,7 +2216,7 @@ static double vertex_distance(const vertex_xy *lhs, const vertex_xy *rhs) {
 	return std::hypot(lhs->x - rhs->x, lhs->y - rhs->y);
 }
 
-static double point_line_distance(const vertex_xy *p, const vertex_xy *v, const vertex_xy *w) {
+static double vertex_segment_distance(const vertex_xy *p, const vertex_xy *v, const vertex_xy *w) {
 	const auto l2 = vertex_distance_squared(v, w);
 	if (l2 == 0) {
 		// is not better to just compare if w == v?
@@ -2159,15 +2233,79 @@ static double point_line_distance(const vertex_xy *p, const vertex_xy *v, const 
 	return vertex_distance(p, &intersection);
 }
 
-static double point_linestring_distance(const sgl::geometry *lhs, const sgl::geometry *rhs) {
-	SGL_ASSERT(lhs->get_type() == sgl::geometry_type::POINT);
-	SGL_ASSERT(rhs->get_type() == sgl::geometry_type::LINESTRING);
-
-	if(lhs->is_empty() || rhs->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
+// TODO: Make robust
+static double segment_segment_distance(const vertex_xy *a, const vertex_xy *b, const vertex_xy *c, const vertex_xy *d) {
+	// Degenerate cases
+	if(a == b) {
+		return vertex_segment_distance(a, c, d);
+	}
+	if (c == d) {
+		return vertex_segment_distance(c, a, b);
 	}
 
+	const auto denominator = ((b->x - a->x) * (d->y - c->y)) - ((b->y - a->y) * (d->x - c->x));
+	if(denominator == 0) {
+		// The segments are parallel, return the distance between the closest endpoints
+		const auto dist_a = vertex_segment_distance(a, c, d);
+		const auto dist_b = vertex_segment_distance(b, c, d);
+		const auto dist_c = vertex_segment_distance(c, a, b);
+		const auto dist_d = vertex_segment_distance(d, a, b);
+		return std::min(std::min(dist_a, dist_b), std::min(dist_c, dist_d));
+	}
+
+	const auto r = ((a->y - c->y) * (d->x - c->x)) - ((a->x - c->x) * (d->y - c->y));
+	const auto s = ((a->y - c->y) * (b->x - a->x)) - ((a->x - c->x) * (b->y - a->y));
+
+	const auto r_norm = r / denominator;
+	const auto s_norm = s / denominator;
+
+	if (r_norm < 0 || r_norm > 1 || s_norm < 0 || s_norm > 1) {
+		// The segments do not intersect, return the distance between the closest endpoints
+		const auto dist_a = vertex_segment_distance(a, c, d);
+		const auto dist_b = vertex_segment_distance(b, c, d);
+		const auto dist_c = vertex_segment_distance(c, a, b);
+		const auto dist_d = vertex_segment_distance(d, a, b);
+		return std::min(std::min(dist_a, dist_b), std::min(dist_c, dist_d));
+	}
+
+	// Intersection, so no distance!
+	return 0.0;
+}
+
+//------------------------------------------------------------------------------
+// Distance Cases
+//------------------------------------------------------------------------------
+//
+// This works, ish, but is much slower than GEOS for polygons/linestrings since
+// we dont prepare. We should do that tough.
+//
+
+static double point_point_distance(const sgl::geometry *lhs, const sgl::geometry *rhs) {
+	SGL_ASSERT(lhs->get_type() == sgl::geometry_type::POINT);
+	SGL_ASSERT(rhs->get_type() == sgl::geometry_type::POINT);
+	SGL_ASSERT(!lhs->is_empty());
+	SGL_ASSERT(!rhs->is_empty());
+
 	const auto lhs_vertex = lhs->get_vertex_xy(0);
+	const auto rhs_vertex = rhs->get_vertex_xy(0);
+
+	return std::hypot(lhs_vertex.x - rhs_vertex.x, lhs_vertex.y - rhs_vertex.y);
+}
+
+static double point_linestring_distance(const geometry *lhs, const geometry *rhs) {
+	SGL_ASSERT(lhs->get_type() == sgl::geometry_type::POINT);
+	SGL_ASSERT(rhs->get_type() == sgl::geometry_type::LINESTRING);
+	SGL_ASSERT(!lhs->is_empty());
+	SGL_ASSERT(!rhs->is_empty());
+
+
+	const auto lhs_vertex = lhs->get_vertex_xy(0);
+
+	if(rhs->is_prepared()) {
+		auto &prep = *static_cast<const sgl::prepared_geometry *>(rhs);
+		return prep.index.distance(&lhs_vertex, rhs->get_vertex_size(), rhs->get_vertex_data());
+	}
+
 	double min_dist = std::numeric_limits<double>::infinity();
 	const auto count = rhs->get_count();
 
@@ -2179,7 +2317,7 @@ static double point_linestring_distance(const sgl::geometry *lhs, const sgl::geo
 
 	for(size_t i = 1; i < count; i++) {
 		const auto v2 = rhs->get_vertex_xy(i);
-		const auto dist = point_line_distance(&lhs_vertex, &v1, &v2);
+		const auto dist = vertex_segment_distance(&lhs_vertex, &v1, &v2);
 		min_dist = std::min(min_dist, dist);
 		v1 = v2;
 	}
@@ -2187,79 +2325,153 @@ static double point_linestring_distance(const sgl::geometry *lhs, const sgl::geo
 	return min_dist;
 }
 
-static double point_polygon_distance(const sgl::geometry *lhs, const sgl::geometry *rhs) {
+static double point_polygon_distance(const geometry *lhs, const geometry *rhs) {
 	SGL_ASSERT(lhs->get_type() == sgl::geometry_type::POINT);
 	SGL_ASSERT(rhs->get_type() == sgl::geometry_type::POLYGON);
+	SGL_ASSERT(!lhs->is_empty());
+	SGL_ASSERT(!rhs->is_empty());
 
-	if(rhs->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
-	}
+	const auto vert = lhs->get_vertex_xy(0);
 	const auto shell = rhs->get_first_part();
-	SGL_ASSERT(shell != nullptr);
-	return point_linestring_distance(lhs, shell);
+
+	switch (vertex_in_ring(&vert, shell)) {
+		case point_in_polygon_result::EXTERIOR:
+			return point_linestring_distance(lhs, shell);
+		case point_in_polygon_result::INTERIOR:
+			// We need to check the holes
+			for(auto ring = shell->get_next(); ring != shell; ring = ring->get_next()) {
+				if(vertex_in_ring(&vert, ring) != point_in_polygon_result::EXTERIOR) {
+					// A point can only be inside a single hole, so we can stop here
+					// (holes cant overlap if the polygon is valid)
+					return point_linestring_distance(lhs, ring);
+				}
+			}
+			// The point is inside the polygon and not inside any holes
+			// fall-through
+		case point_in_polygon_result::BOUNDARY:
+		default:
+			return 0.0;
+	}
 }
 
 static double linestring_linestring_distance(const geometry *lhs, const geometry *rhs) {
 	SGL_ASSERT(lhs->get_type() == geometry_type::LINESTRING);
 	SGL_ASSERT(rhs->get_type() == geometry_type::LINESTRING);
+	SGL_ASSERT(!lhs->is_empty());
+	SGL_ASSERT(!rhs->is_empty());
 
-	if(lhs->is_empty() || rhs->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
-	}
+	const auto lhs_vertex_array = lhs->get_vertex_data();
+	const auto lhs_vertex_count = lhs->get_count();
+	const auto lhs_vertex_width = lhs->get_vertex_size();
+
+	const auto rhs_vertex_array = rhs->get_vertex_data();
+	const auto rhs_vertex_count = rhs->get_count();
+	const auto rhs_vertex_width = rhs->get_vertex_size();
 
 	double min_dist = std::numeric_limits<double>::infinity();
-	// TODO:
+
+	vertex_xy lhs_prev = {0, 0};
+	vertex_xy lhs_curr = {0, 0};
+	vertex_xy rhs_prev = {0, 0};
+	vertex_xy rhs_curr = {0, 0};
+
+	memcpy(&lhs_prev, lhs_vertex_array, sizeof(vertex_xy));
+	for(uint32_t i = 1; i < lhs_vertex_count; i++) {
+		memcpy(&lhs_curr, lhs_vertex_array + i * lhs_vertex_width, sizeof(vertex_xy));
+
+		memcpy(&rhs_prev, rhs_vertex_array, sizeof(vertex_xy));
+		for(uint32_t j = 1; j < rhs_vertex_count; j++) {
+			memcpy(&rhs_curr, rhs_vertex_array + j * rhs_vertex_width, sizeof(vertex_xy));
+
+			const auto dist = segment_segment_distance(&lhs_prev, &lhs_curr, &rhs_prev, &rhs_curr);
+			min_dist = std::min(min_dist, dist);
+
+			rhs_prev = rhs_curr;
+		}
+
+		lhs_prev = lhs_curr;
+	}
+
 	return min_dist;
 }
 
 static double linestring_polygon_distance(const geometry *lhs, const geometry *rhs) {
 	SGL_ASSERT(lhs->get_type() == geometry_type::LINESTRING);
 	SGL_ASSERT(rhs->get_type() == geometry_type::POLYGON);
+	SGL_ASSERT(!lhs->is_empty());
+	SGL_ASSERT(!rhs->is_empty());
 
-	if(lhs->is_empty() || rhs->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
-	}
-
-	if(rhs->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
-	}
 	const auto shell = rhs->get_first_part();
-	if(shell->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
+
+	const auto vert = lhs->get_vertex_xy(0);
+	if(vertex_in_ring(&vert, shell) == point_in_polygon_result::EXTERIOR) {
+		// The linestring is either outside the polygon, or intersects somewhere on the boundary
+		// - If the linestring were completely inside, then _all_ vertices would be inside
+		return point_linestring_distance(lhs, shell);
 	}
-	return linestring_linestring_distance(lhs, shell);
+
+	// Get the distance to each ring
+	auto min_dist = std::numeric_limits<double>::infinity();
+	for(auto ring = shell->get_next(); ring != shell; ring = ring->get_next()) {
+		// TODO: early out
+		min_dist = std::min(min_dist, linestring_linestring_distance(lhs, ring));
+	}
+
+	for(auto ring = shell->get_next(); ring != shell; ring = ring->get_next()) {
+		// The linestring is either completely in the hole, or intersects somewhere on hole boundary
+		// Regardless, we already have the distance to the hole
+		if(vertex_in_ring(&vert, ring) != point_in_polygon_result::EXTERIOR) {
+			return min_dist;
+		}
+	}
+
+	// Otherwise, we must be partly inside the polygon, at which point the distance is 0
+	return 0.0;
 }
 
 static double polygon_polygon_distance(const geometry *lhs, const geometry *rhs) {
 	SGL_ASSERT(lhs->get_type() == geometry_type::POLYGON);
 	SGL_ASSERT(rhs->get_type() == geometry_type::POLYGON);
+	SGL_ASSERT(!lhs->is_empty());
+	SGL_ASSERT(!rhs->is_empty());
 
-	if(lhs->is_empty() || rhs->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
-	}
-
-	if(lhs->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
-	}
 	const auto lhs_shell = lhs->get_first_part();
-	if(lhs_shell->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
-	}
-
-	if(rhs->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
-	}
 	const auto rhs_shell = rhs->get_first_part();
-	if(rhs_shell->is_empty()) {
-		return std::numeric_limits<double>::quiet_NaN();
+
+	const auto lhs_vert = lhs_shell->get_vertex_xy(0);
+	const auto rhs_vert = rhs_shell->get_vertex_xy(0);
+
+	const auto lhs_loc = vertex_in_ring(&lhs_vert, rhs_shell);
+	const auto rhs_loc = vertex_in_ring(&rhs_vert, lhs_shell);
+
+	if(lhs_loc == point_in_polygon_result::EXTERIOR && rhs_loc == point_in_polygon_result::EXTERIOR) {
+		// The polygons are completely disjoint, or intersect on the boundary
+		return linestring_linestring_distance(lhs_shell, rhs_shell);
 	}
 
-	return linestring_linestring_distance(lhs_shell, rhs_shell);
+	for(auto lhs_ring = lhs_shell->get_next(); lhs_ring != lhs_shell; lhs_ring = lhs_ring->get_next()) {
+		if(vertex_in_ring(&rhs_vert, lhs_ring) != point_in_polygon_result::EXTERIOR) {
+			// One polygon is inside the hole of the other, or they intersect on one of the holes.
+			return linestring_linestring_distance(lhs_ring, rhs_shell);
+		}
+	}
+
+	for(auto rhs_ring = rhs_shell->get_next(); rhs_ring != rhs_shell; rhs_ring = rhs_ring->get_next()) {
+		if(vertex_in_ring(&lhs_vert, rhs_ring) != point_in_polygon_result::EXTERIOR) {
+			// One polygon is inside the hole of the other, or they intersect on one of the holes.
+			return linestring_linestring_distance(lhs_shell, rhs_ring);
+		}
+	}
+
+	// Otherwise, the polygons must have some intersection, so the distance is 0
+	return 0.0;
 }
 
 static double distance_dispatch(const geometry *lhs_p, const geometry *rhs_p) {
 	SGL_ASSERT(!lhs_p->is_collection());
 	SGL_ASSERT(!rhs_p->is_collection());
+	SGL_ASSERT(!lhs_p->is_empty());
+	SGL_ASSERT(!rhs_p->is_empty());
 
 	switch (lhs_p->get_type()) {
 	case geometry_type::POINT:
@@ -2304,7 +2516,9 @@ static double distance_dispatch(const geometry *lhs_p, const geometry *rhs_p) {
 	}
 }
 
-double distance(const geometry* lhs_p, const geometry* rhs_p) {
+// Calls FUNC for each possible pair of non-empty, non-collection geometries given by lhs_p and rhs_p
+template<class FUNC>
+static void iterate_pairwise_components(const geometry* lhs_p, const geometry* rhs_p, FUNC &&func) {
 	SGL_ASSERT(lhs_p != nullptr);
 	SGL_ASSERT(rhs_p != nullptr);
 
@@ -2314,47 +2528,53 @@ double distance(const geometry* lhs_p, const geometry* rhs_p) {
 	const auto lhs_root = lhs->get_parent();
 	const auto rhs_root = rhs->get_parent();
 
-	double min_dist = std::numeric_limits<double>::infinity();
-
 	while(lhs != lhs_root) {
-
-		if(lhs->is_collection() && !lhs->is_empty()) {
-			lhs = lhs->get_first_part();
-			continue;
-		}
-
-		// Otherwise, we have a leaf on the LHS
-		// I guess this is where we create an LHS index?
-		// I guess it makes sense to re-order lhs and rhs depending on number of parts/verts?
-		// Maybe calculate a part/vertex ratio. Although dont count interior polygon rings for that.
-		// Alt just cache every calculation.
-
-		while(rhs != rhs_root) {
-			if(rhs->is_collection() && !rhs->is_empty()) {
-				rhs = rhs->get_first_part();
+		if(!lhs->is_empty()) {
+			if(lhs->is_collection()) {
+				// Recurse down into the LHS collection
+				lhs = lhs->get_first_part();
 				continue;
 			}
 
-			// If we get here, we have a leaf on both sides!
-			min_dist = std::min(min_dist, distance_dispatch(lhs, rhs));
-
-			// Now move the rhs up
 			while(rhs != rhs_root) {
-				const auto parent = rhs->get_parent();
-				if(parent == rhs_root) {
+				if(!rhs->is_empty()) {
+					if(rhs->is_collection()) {
+						// Recurse down into the RHS collection
+						rhs = rhs->get_first_part();
+						continue;
+					}
+
+					// We should now have two non-empty leaf geometries
+					SGL_ASSERT(!lhs->is_collection());
+					SGL_ASSERT(!rhs->is_collection());
+					SGL_ASSERT(!lhs->is_empty());
+					SGL_ASSERT(!rhs->is_empty());
+
+					// Call the handler
+					func(lhs, rhs);
+				}
+
+				// We are done with the current RHS geometry, move upwards/sideways!
+				while(rhs != rhs_root) {
+					const auto parent = rhs->get_parent();
+					if(parent == rhs_root) {
+						rhs = parent;
+						break;
+					}
+
+					if(rhs != parent->get_last_part()) {
+						// Go sideways
+						rhs = rhs->get_next();
+						break;
+					}
+
+					// Go upwards
 					rhs = parent;
-					break;
 				}
-
-				if(rhs != parent->get_last_part()) {
-					rhs = rhs->get_next();
-					break;
-				}
-
-				rhs = parent;
 			}
 		}
 
+		// We are done with the current LHS geometry, move upwards/sideways!
 		while (lhs != lhs_root) {
 			const auto parent = lhs->get_parent();
 			if (parent == lhs_root) {
@@ -2363,17 +2583,28 @@ double distance(const geometry* lhs_p, const geometry* rhs_p) {
 			}
 
 			if (lhs != parent->get_last_part()) {
+				// Go sideways
 				lhs = lhs->get_next();
 				break;
 			}
 
+			// Go upwards
 			lhs = parent;
 		}
 	}
+}
+
+double euclidean_distance(const geometry* lhs_p, const geometry* rhs_p) {
+
+	double min_dist = std::numeric_limits<double>::infinity();
+
+	iterate_pairwise_components(lhs_p, rhs_p, [&](const geometry* lhs, const geometry* rhs) {
+		const auto dist = distance_dispatch(lhs, rhs);
+		min_dist = std::min(min_dist, dist);
+	});
 
 	return min_dist;
 }
-
 
 //----------------------------------------------------------------------------------------------------------------------
 // Validity
@@ -2448,8 +2679,218 @@ bool is_valid(const sgl::geometry *geom) {
 	}
 }
 
-
-
 } // namespace ops
+
+//----------------------------------------------------------------------------------------------------------------------
+// Prepared
+//----------------------------------------------------------------------------------------------------------------------
+
+void n_index::build(allocator *alloc, uint32_t vertex_width, const void *vertex_array_p, uint32_t vertex_count) {
+	const auto vertex_array = static_cast<const uint8_t *>(vertex_array_p);
+
+	if(vertex_count == 0) {
+		return;
+	}
+
+	uint32_t layer_bound[16] = {}; // 4^16 > max(uint32_t)
+	uint32_t layer_count = 0;
+
+	// We always have |vertices-1| segments
+	const uint32_t count = (vertex_count + NODE_SIZE - 1) / NODE_SIZE;
+
+	while(true) {
+		layer_bound[layer_count] = static_cast<uint32_t>(
+				std::ceil(static_cast<double>(count) /
+				std::pow(static_cast<double>(NODE_SIZE), layer_count)));
+
+		if(layer_bound[layer_count++] <= 1) {
+			break;
+		}
+	}
+
+	std::reverse(layer_bound, layer_bound + layer_count);
+
+	// Allocate the layers
+	level_array = static_cast<level *>(alloc->alloc(sizeof(level) * layer_count));
+	level_count = layer_count;
+
+	for(uint32_t i = 0; i < level_count; i++) {
+		level_array[i].entry_count = layer_bound[i];
+		level_array[i].entry_array = static_cast<box_xy *>(alloc->alloc(sizeof(box_xy) * layer_bound[i]));
+	}
+
+	// Fill lower layer
+	auto &last_entry = level_array[level_count - 1];
+	for(uint32_t i = 0; i < last_entry.entry_count; i++) {
+
+		auto &box = last_entry.entry_array[i];
+
+		for(uint32_t j = 0; j < NODE_SIZE; j++) {
+			const auto offset = i * NODE_SIZE + j;
+
+			vertex_xy curr = {0, 0};
+			memcpy(&curr, vertex_array + offset * vertex_width, sizeof(vertex_xy));
+
+			box.min.x = std::min(box.min.x, curr.x);
+			box.min.y = std::min(box.min.y, curr.y);
+			box.max.x = std::max(box.max.x, curr.x);
+			box.max.y = std::max(box.max.y, curr.y);
+		}
+	}
+
+	// Now fill the upper layers
+	for(int32_t i = level_count - 2; i >= 0; i--) {
+		const auto &prev = level_array[i + 1];
+		const auto &curr = level_array[i];
+
+		for(uint32_t j = 0; j < curr.entry_count; j++) {
+			auto &box = curr.entry_array[j];
+
+			const auto beg = j * NODE_SIZE;
+			const auto end = std::min(beg + NODE_SIZE, prev.entry_count);
+
+			for(uint32_t k = beg; k < end; k++) {
+				auto &prev_box = prev.entry_array[k];
+
+				box.min.x = std::min(box.min.x, prev_box.min.x);
+				box.min.y = std::min(box.min.y, prev_box.min.y);
+				box.max.x = std::max(box.max.x, prev_box.max.x);
+				box.max.y = std::max(box.max.y, prev_box.max.y);
+			}
+		}
+	}
+}
+
+double n_index::distance(const vertex_xy *v, uint32_t vertex_width, const void *vertex_array_p) const {
+	const auto vertex_array = static_cast<const uint8_t *>(vertex_array_p);
+
+	uint32_t stack[16] = {0};
+	uint32_t depth = 0;
+
+	double min_dist = std::numeric_limits<double>::infinity();
+
+	while(true) {
+		const auto &level = level_array[depth];
+		const auto entry = stack[depth];
+		const auto &box = level.entry_array[entry];
+
+		const auto box_dist = box.distance_to(*v);
+
+		if(box_dist < min_dist) {
+			if(depth == level_count - 1) {
+				// We are at a leaf!
+				const auto beg_idx = entry * NODE_SIZE;
+				const auto end_idx = std::min(beg_idx + NODE_SIZE, level.entry_count * NODE_SIZE);
+
+				// Loop over the segments
+				for(uint32_t i = beg_idx; i < end_idx - 1; i++) {
+					vertex_xy curr = {0, 0};
+					vertex_xy next = {0, 0};
+
+					memcpy(&curr, vertex_array + (i * vertex_width), sizeof(vertex_xy));
+					memcpy(&next, vertex_array + ((i + 1) * vertex_width), sizeof(vertex_xy));
+
+					const auto dist = sgl::ops::vertex_segment_distance(v, &curr, &next);
+					min_dist = std::min(min_dist, dist);
+				}
+			} else {
+				// Otherwise, go downwards
+				depth++;
+				stack[depth] = entry * NODE_SIZE;
+				continue;
+			}
+		}
+
+		while(true) {
+
+			if(depth == 0) {
+				// we are done!
+				return min_dist;
+			}
+
+			stack[depth]++;
+
+			if(stack[depth] != level_array[depth-1].entry_count) {
+				D_ASSERT(stack[depth] < level_array[depth-1].entry_count);
+				// Go sideways!
+				break;
+			}
+
+			// Go upwards!
+			depth--;
+		}
+	}
+
+	return min_dist;
+}
+
+
+bool n_index::contains(const vertex_xy *v, uint32_t vertex_width, const void *vertex_array_p) const {
+	const auto vertex_array = static_cast<const uint8_t *>(vertex_array_p);
+
+	uint32_t stack[16] = {0};
+	uint32_t depth = 0;
+
+	// Traverse the tree
+	while(true) {
+		const auto &level = level_array[depth];
+		const auto entry = stack[depth];
+		const auto &box = level.entry_array[entry];
+
+		if(box.contains(*v)) {
+			if(depth == level_count - 1) {
+
+				// We are at a leaf!
+				const auto beg_idx = entry * NODE_SIZE;
+				const auto end_idx = std::min(beg_idx + NODE_SIZE, level.entry_count * NODE_SIZE);
+
+				// Loop over the segments
+				for(uint32_t i = beg_idx; i < end_idx; i++) {
+					vertex_xy curr = {0, 0};
+					vertex_xy next = {0, 0};
+
+					memcpy(&curr, vertex_array + (i * vertex_width), sizeof(vertex_xy));
+					memcpy(&next, vertex_array + ((i + 1) * vertex_width), sizeof(vertex_xy));
+
+					const auto sign = ops::orient2d_fast(*v, curr, next);
+
+					if(is_ccw && sign >= 0) {
+						// The point is inside the polygon
+						return true;
+					}
+					if(!is_ccw && sign <= 0) {
+						// The point is inside the polygon
+						return true;
+					}
+				}
+			} else {
+				// Otherwise, go downwards
+				depth++;
+				stack[depth] = entry * NODE_SIZE;
+				continue;
+			}
+		}
+
+		while(true) {
+
+			if(depth == 0) {
+				// we are done!
+				return false;
+			}
+
+			stack[depth]++;
+
+			if(stack[depth] != level_array[depth-1].entry_count) {
+				D_ASSERT(stack[depth] < level_array[depth-1].entry_count);
+				// Go sideways!
+				break;
+			}
+
+			// Go upwards!
+			depth--;
+		}
+	}
+	return false;
+}
 
 } // namespace sgl
