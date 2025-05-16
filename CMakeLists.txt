@@ -93,16 +93,17 @@ if(EMSCRIPTEN)
   set(OPENSSL_USE_STATIC_LIBS OFF)
 endif()
 
-find_library(SQLITE3_MEMVFS memvfs)
+#find_library(SQLITE3_MEMVFS memvfs)
 find_package(ZLIB REQUIRED)
 find_package(PROJ REQUIRED)
-find_package(SQLite3 REQUIRED)
+#find_package(SQLite3 REQUIRED)
 find_package(GDAL REQUIRED)
 find_package(EXPAT REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 # Important: The link order matters, its the reverse order of dependency
-set(EXTENSION_DEPENDENCIES GDAL::GDAL PROJ::proj EXPAT::EXPAT SQLite::SQLite3
-                           ZLIB::ZLIB ${SQLITE3_MEMVFS})
+set(EXTENSION_DEPENDENCIES GDAL::GDAL PROJ::proj EXPAT::EXPAT unofficial::sqlite3::sqlite3
+                           ZLIB::ZLIB)
 
 if(SPATIAL_USE_GEOS)
   message(STATUS "Building with GEOS functionality")
@@ -133,7 +134,7 @@ if((NOT EMSCRIPTEN) AND (NOT IOS))
 endif()
 
 # Add dependencies to extension
-target_link_libraries(${EXTENSION_NAME} PUBLIC ${EXTENSION_DEPENDENCIES})
+target_link_libraries(${EXTENSION_NAME} ${EXTENSION_DEPENDENCIES})
 
 # Build extensions
 set(PARAMETERS "-warnings")
