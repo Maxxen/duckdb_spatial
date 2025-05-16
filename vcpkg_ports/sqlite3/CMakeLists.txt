@@ -19,6 +19,13 @@ target_compile_definitions(
         $<$<CONFIG:Debug>:SQLITE_ENABLE_SELECTTRACE>
         $<$<CONFIG:Debug>:SQLITE_ENABLE_WHERETRACE>
         $<$<COMPILE_LANGUAGE:RC>:RC_VERONLY>
+
+        # (DuckDB): Dont remember why this was needed
+        SQLITE_ENABLE_COLUMN_METADATA=1
+        # (DuckDB): Enable the use of URI filenames (required for MemVFS)
+        SQLITE_USE_URI=1
+        # (DuckDB): Use only memory for temporary storage
+        SQLITE_TEMP_STORE=3
 )
 
 if (BUILD_SHARED_LIBS)
